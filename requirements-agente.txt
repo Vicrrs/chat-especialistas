@@ -1,0 +1,14 @@
+mlflow>=3.1
+langgraph>=0.4
+langchain-core>=0.3
+langchain-text-splitters>=0.3
+databricks-langchain>=0.5
+databricks-vectorsearch>=0.50
+databricks-agents>=1.0
+pydantic>=2.6
+pyyaml>=6.0
+sqlglot>=25.0
+databricks-sdk>=0.60
+pypdf>=4.0
+python-docx>=1.1
+pytest>=8.0
