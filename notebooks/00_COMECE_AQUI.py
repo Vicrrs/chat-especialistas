@@ -2,6 +2,9 @@
 # MAGIC %md
 # MAGIC # 🤖 Comece aqui · Chat Multi-Especialistas
 # MAGIC
+# MAGIC > **Recomendado:** use a **app Streamlit** (`app.py`); o passo a passo está no README, em
+# MAGIC > "Criar a app a partir do Git folder". Este notebook é a mesma configuração para quem prefere notebook.
+# MAGIC
 # MAGIC Este assistente monta o chat inteiro sem você editar código:
 # MAGIC
 # MAGIC | Aba | O que você faz |
@@ -17,7 +20,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -q -r ../requirements.txt "ipywidgets>=8"
+# MAGIC %pip install -q -r ../requirements-agente.txt "ipywidgets>=8"
 # MAGIC %restart_python
 
 # COMMAND ----------
