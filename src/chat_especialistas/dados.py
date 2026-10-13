@@ -62,49 +62,11 @@ class DatabricksFonteDados:
 
     # --------------------------------------------------------------- SQL
     def executar_sql(self, esp: EspecialistaConfig, sql: str) -> ResultadoSQL:
-        from databricks.sdk.service.sql import (
-            Disposition,
-            ExecuteStatementRequestOnWaitTimeout,
-            Format,
-            StatementState,
-        )
-
         bi = self.cfg.bi
         warehouse = self.cfg.warehouse_de(esp)
         if not warehouse or warehouse.startswith("COLOQUE"):
             return ResultadoSQL(erro="warehouse_id não configurado em agents.yaml (bi.warehouse_id).")
-
-        w = self._cliente()
-        inicio = time.perf_counter()
-        resp = w.statement_execution.execute_statement(
-            statement=sql,
-            warehouse_id=warehouse,
-            wait_timeout="30s",
-            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
-            row_limit=bi.max_linhas,
-            format=Format.JSON_ARRAY,
-            disposition=Disposition.INLINE,
-        )
-        limite = time.time() + bi.timeout_segundos
-        while resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
-            if time.time() > limite:
-                w.statement_execution.cancel_execution(resp.statement_id)
-                return ResultadoSQL(
-                    erro=f"Consulta passou de {bi.timeout_segundos}s e foi cancelada. Simplifique ou agregue mais.",
-                    duracao_ms=int((time.perf_counter() - inicio) * 1000),
-                )
-            time.sleep(1)
-            resp = w.statement_execution.get_statement(resp.statement_id)
-
-        duracao = int((time.perf_counter() - inicio) * 1000)
-        if resp.status.state != StatementState.SUCCEEDED:
-            msg = resp.status.error.message if resp.status.error else str(resp.status.state)
-            return ResultadoSQL(erro=msg, duracao_ms=duracao)
-
-        colunas = [c.name for c in resp.manifest.schema.columns] if resp.manifest else []
-        linhas = (resp.result.data_array or []) if resp.result else []
-        truncado = bool(resp.manifest and resp.manifest.truncated)
-        return ResultadoSQL(colunas=colunas, linhas=linhas, truncado=truncado, duracao_ms=duracao)
+        return executar_sql_warehouse(self._cliente(), warehouse, sql, bi.max_linhas, bi.timeout_segundos)
 
     # ------------------------------------------------------------- Genie
     def perguntar_genie(self, esp: EspecialistaConfig, pergunta: str) -> Dict[str, Any]:
@@ -129,3 +91,46 @@ class DatabricksFonteDados:
             saida["erro"] = str(msg.error)
         saida["duracao_ms"] = int((time.perf_counter() - inicio) * 1000)
         return saida
+
+
+def executar_sql_warehouse(w, warehouse_id: str, sql: str, max_linhas: int = 1000, timeout_segundos: int = 120) -> ResultadoSQL:
+    """Executa SQL num SQL Warehouse (Statement Execution API). Valores voltam como texto."""
+    from databricks.sdk.service.sql import (
+        Disposition,
+        ExecuteStatementRequestOnWaitTimeout,
+        Format,
+        StatementState,
+    )
+
+    inicio = time.perf_counter()
+    try:
+        resp = w.statement_execution.execute_statement(
+            statement=sql,
+            warehouse_id=warehouse_id,
+            wait_timeout="30s",
+            on_wait_timeout=ExecuteStatementRequestOnWaitTimeout.CONTINUE,
+            row_limit=max_linhas,
+            format=Format.JSON_ARRAY,
+            disposition=Disposition.INLINE,
+        )
+        limite = time.time() + timeout_segundos
+        while resp.status.state in (StatementState.PENDING, StatementState.RUNNING):
+            if time.time() > limite:
+                w.statement_execution.cancel_execution(resp.statement_id)
+                return ResultadoSQL(
+                    erro=f"Consulta passou de {timeout_segundos}s e foi cancelada. Simplifique ou agregue mais.",
+                    duracao_ms=int((time.perf_counter() - inicio) * 1000),
+                )
+            time.sleep(1)
+            resp = w.statement_execution.get_statement(resp.statement_id)
+    except Exception as e:  # noqa: BLE001
+        return ResultadoSQL(erro=str(e)[:500], duracao_ms=int((time.perf_counter() - inicio) * 1000))
+
+    duracao = int((time.perf_counter() - inicio) * 1000)
+    if resp.status.state != StatementState.SUCCEEDED:
+        msg = resp.status.error.message if resp.status.error else str(resp.status.state)
+        return ResultadoSQL(erro=msg, duracao_ms=duracao)
+    colunas = [c.name for c in resp.manifest.schema.columns] if resp.manifest and resp.manifest.schema else []
+    linhas = (resp.result.data_array or []) if resp.result else []
+    truncado = bool(resp.manifest and resp.manifest.truncated)
+    return ResultadoSQL(colunas=colunas, linhas=linhas, truncado=truncado, duracao_ms=duracao)
