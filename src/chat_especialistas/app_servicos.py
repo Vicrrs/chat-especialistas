@@ -36,6 +36,9 @@ class Servicos:
         w_app = w_app or WorkspaceClient()
         token = headers.get("x-forwarded-access-token")
         usuario = headers.get("x-forwarded-email") or headers.get("x-forwarded-preferred-username")
+        # IDENTIDADE_APP=app no app.yaml força o uso só da conta de serviço da app.
+        if os.environ.get("IDENTIDADE_APP", "auto").lower() == "app":
+            token = None
         if token:
             w = WorkspaceClient(host=w_app.config.host, token=token, auth_type="pat")
             sv = cls(w, "usuario", w_app, usuario)

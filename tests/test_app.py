@@ -167,3 +167,9 @@ def test_plano_b_lista_com_conta_de_servico_quando_token_falha():
     assert [m.nome for m in r.llms_chat] and r.genies and r.warehouses
     assert any("HTTP 401 Unauthorized" in a for a in r.avisos)
     assert any("conta de serviço da app" in a for a in r.avisos)
+
+
+def test_identidade_app_forca_conta_de_servico(monkeypatch):
+    monkeypatch.setenv("IDENTIDADE_APP", "app")
+    sv = Servicos.do_contexto({"X-Forwarded-Access-Token": "tok"}, w_app=FakeWorkspace())
+    assert sv.identidade == "app" and sv.w is sv.w_app

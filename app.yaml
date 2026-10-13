@@ -15,6 +15,10 @@ env:
     value: main
   - name: PROJETO_SCHEMA
     value: chat_especialistas
+  # auto = usa o token de quem está logado (user authorization) e cai para a conta de serviço se falhar
+  # app  = usa SÓ a conta de serviço da app (dê a ela permissão nos modelos, warehouse, tabelas e Genies)
+  - name: IDENTIDADE_APP
+    value: auto
   # Opcional: pasta do repositório no workspace, se a app não conseguir descobrir sozinha.
   # - name: CAMINHO_REPO
   #   value: /Workspace/Users/voce@empresa.com/chat-especialistas
