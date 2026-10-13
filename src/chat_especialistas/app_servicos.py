@@ -28,21 +28,70 @@ class Servicos:
 
     # --------------------------------------------------------------- criação
     @classmethod
-    def do_contexto(cls, headers: Optional[Dict[str, str]] = None) -> "Servicos":
+    def do_contexto(cls, headers: Optional[Dict[str, str]] = None, w_app=None) -> "Servicos":
+        """Cria os clientes a partir dos headers ATUAIS (o token do usuário é renovado pelo Databricks)."""
         from databricks.sdk import WorkspaceClient
 
         headers = {k.lower(): v for k, v in (headers or {}).items()}
-        w_app = WorkspaceClient()
+        w_app = w_app or WorkspaceClient()
         token = headers.get("x-forwarded-access-token")
         usuario = headers.get("x-forwarded-email") or headers.get("x-forwarded-preferred-username")
         if token:
             w = WorkspaceClient(host=w_app.config.host, token=token, auth_type="pat")
-            return cls(w, "usuario", w_app, usuario)
-        return cls(w_app, "app", w_app, usuario)
+            sv = cls(w, "usuario", w_app, usuario)
+        else:
+            sv = cls(w_app, "app", w_app, usuario)
+        sv.token_hash = hash(token) if token else None
+        return sv
 
     # ------------------------------------------------------------ descoberta
     def recursos(self) -> Recursos:
-        return descobrir(self.w)
+        """Lista com o usuário; o que falhar é tentado com a conta de serviço da app (plano B)."""
+        r = descobrir(self.w)
+        if self.w_app is self.w or not r.avisos:
+            return r
+        plano_b = descobrir(self.w_app)
+        avisos = []
+        if not r.llms_chat and plano_b.llms_chat:
+            r.llms_chat, r.embeddings = plano_b.llms_chat, plano_b.embeddings
+            avisos.append("modelos")
+        if not r.genies and plano_b.genies:
+            r.genies = plano_b.genies
+            avisos.append("Genie Spaces")
+        if not r.warehouses and plano_b.warehouses:
+            r.warehouses = plano_b.warehouses
+            avisos.append("SQL Warehouses")
+        if avisos:
+            r.avisos.append(
+                "Listei " + ", ".join(avisos) + " com a conta de serviço da app (o seu token falhou). "
+                "Só aparece o que foi concedido a ela."
+            )
+        return r
+
+    def diagnostico(self) -> List[Dict[str, Any]]:
+        """Chama a API crua com cada identidade e mostra status, tipo e início da resposta."""
+        import requests
+
+        resultado = []
+        identidades = [("usuário", self.w)] if self.identidade == "usuario" else []
+        identidades.append(("conta de serviço da app", self.w_app))
+        for nome, cliente in identidades:
+            for caminho in ("/api/2.0/preview/scim/v2/Me", "/api/2.0/serving-endpoints", "/api/2.0/sql/warehouses"):
+                linha: Dict[str, Any] = {"identidade": nome, "chamada": caminho}
+                try:
+                    host = cliente.config.host.rstrip("/")
+                    cab = cliente.config.authenticate()
+                    resp = requests.get(host + caminho, headers=cab, timeout=20, allow_redirects=False)
+                    linha.update(
+                        status=resp.status_code,
+                        tipo=resp.headers.get("content-type", ""),
+                        redireciona_para=resp.headers.get("location", ""),
+                        resposta=resp.text[:200].replace("\n", " "),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    linha.update(status="erro", resposta=str(e)[:200])
+                resultado.append(linha)
+        return resultado
 
     def catalogos(self) -> List[str]:
         return listar_catalogos(self.w)
