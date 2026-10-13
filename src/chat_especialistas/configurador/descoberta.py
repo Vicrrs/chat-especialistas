@@ -130,21 +130,37 @@ def listar_warehouses(w) -> List[WarehouseInfo]:
     return sorted(lista, key=lambda x: (not x.serverless, x.estado != "RUNNING", x.nome))
 
 
+def mensagem_erro(e: Exception) -> str:
+    """Resume erros do SDK; para falta de escopo, diz exatamente o que liberar na app."""
+    import re
+
+    texto = str(e)
+    m = re.search(r"does not have required scopes?:\s*([\w.:\-, ]+?)\s*(\[|$)", texto)
+    if m:
+        escopos = m.group(1).strip()
+        return (
+            f"falta o escopo `{escopos}` na user authorization da app. Vá em Apps → (sua app) → "
+            "Authorization → User authorization, adicione o escopo, salve e reabra a app em uma aba "
+            "anônima (para autorizar de novo)."
+        )
+    return texto.split(" Config: ")[0][:300]
+
+
 def descobrir(w) -> Recursos:
     """Lista tudo; uma falha (ex.: Genie desabilitado) vira aviso e não interrompe o resto."""
     r = Recursos()
     try:
         r.llms_chat, r.embeddings = listar_modelos(w)
     except Exception as e:  # noqa: BLE001
-        r.avisos.append(f"Não foi possível listar endpoints de modelos: {e}")
+        r.avisos.append(f"Não foi possível listar endpoints de modelos: {mensagem_erro(e)}")
     try:
         r.genies = listar_genies(w)
     except Exception as e:  # noqa: BLE001
-        r.avisos.append(f"Não foi possível listar Genie Spaces (Genie habilitado no workspace?): {e}")
+        r.avisos.append(f"Não foi possível listar Genie Spaces: {mensagem_erro(e)}")
     try:
         r.warehouses = listar_warehouses(w)
     except Exception as e:  # noqa: BLE001
-        r.avisos.append(f"Não foi possível listar SQL Warehouses: {e}")
+        r.avisos.append(f"Não foi possível listar SQL Warehouses: {mensagem_erro(e)}")
     return r
 
 
