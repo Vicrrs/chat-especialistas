@@ -153,3 +153,17 @@ def test_app_avisa_quando_sem_user_authorization():
 def test_extrair_resposta_sem_custom_outputs():
     texto, d = extrair_resposta({"output": [{"content": [{"text": "oi"}]}]})
     assert texto == "oi" and d["tokens"] == 0
+
+
+def test_plano_b_lista_com_conta_de_servico_quando_token_falha():
+    from types import SimpleNamespace as NS
+
+    def falha(*a, **k):
+        raise Exception("unable to parse response. Request log:```GET /api/2.0/x\n< 401 Unauthorized\n< <html>```")
+
+    w_usuario = NS(serving_endpoints=NS(list=falha), genie=NS(list_spaces=falha), warehouses=NS(list=falha))
+    sv = Servicos(w_usuario, "usuario", w_app=FakeWorkspace())
+    r = sv.recursos()
+    assert [m.nome for m in r.llms_chat] and r.genies and r.warehouses
+    assert any("HTTP 401 Unauthorized" in a for a in r.avisos)
+    assert any("conta de serviço da app" in a for a in r.avisos)
