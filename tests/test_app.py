@@ -173,3 +173,28 @@ def test_identidade_app_forca_conta_de_servico(monkeypatch):
     monkeypatch.setenv("IDENTIDADE_APP", "app")
     sv = Servicos.do_contexto({"X-Forwarded-Access-Token": "tok"}, w_app=FakeWorkspace())
     assert sv.identidade == "app" and sv.w is sv.w_app
+
+
+def test_token_sem_escopo_passa_tudo_para_conta_de_servico(monkeypatch):
+    import chat_especialistas.app_servicos as m
+
+    monkeypatch.setenv("IDENTIDADE_APP", "auto")
+    monkeypatch.setattr(m, "escopos_faltando", lambda w: ["model-serving", "sql"])
+    w_app = FakeWorkspace()
+    w_app.config = type("C", (), {"host": "https://x", "client_id": "3507dcde"})()
+    sv = Servicos.do_contexto({"x-forwarded-access-token": "tok", "x-forwarded-email": "a@b"}, w_app=w_app)
+    assert sv.identidade == "app" and sv.w is w_app
+    assert "`model-serving`" in sv.motivo and sv.id_conta_servico == "3507dcde"
+
+
+def test_token_sem_escopo_passa_tudo_para_conta_de_servico(monkeypatch):
+    import chat_especialistas.app_servicos as m
+
+    monkeypatch.setenv("IDENTIDADE_APP", "auto")
+    monkeypatch.setattr(m, "escopos_faltando", lambda w: ["model-serving", "sql"])
+    monkeypatch.setattr("databricks.sdk.WorkspaceClient", lambda **k: object())
+    w_app = FakeWorkspace()
+    w_app.config = type("C", (), {"host": "https://x", "client_id": "3507dcde"})()
+    sv = Servicos.do_contexto({"x-forwarded-access-token": "tok", "x-forwarded-email": "a@b"}, w_app=w_app)
+    assert sv.identidade == "app" and sv.w is w_app
+    assert "`model-serving`" in sv.motivo and sv.id_conta_servico == "3507dcde"

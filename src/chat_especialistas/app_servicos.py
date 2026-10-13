@@ -19,7 +19,32 @@ from .dados import executar_sql_warehouse
 NOTEBOOK_PUBLICACAO = "notebooks/04_publicar_job"
 
 
+def escopos_faltando(w) -> List[str]:
+    """Testa o token do usuário em APIs que exigem escopo; devolve os escopos que faltam."""
+    import re
+
+    import requests
+
+    faltando: List[str] = []
+    try:
+        host = w.config.host.rstrip("/")
+        cab = w.config.authenticate()
+    except Exception:  # noqa: BLE001 - sem como testar: assume que está ok
+        return []
+    for caminho in ("/api/2.0/serving-endpoints", "/api/2.0/sql/warehouses"):
+        try:
+            r = requests.get(host + caminho, headers=cab, timeout=15)
+        except Exception:  # noqa: BLE001
+            continue
+        if r.status_code == 403 and "required scopes" in r.text:
+            m = re.search(r"required scopes?:\s*([\w.:\-, ]+?)\s*(\[|\"|$)", r.text)
+            faltando.append(m.group(1).strip() if m else caminho)
+    return faltando
+
+
 class Servicos:
+    motivo = None
+
     def __init__(self, w, identidade: str, w_app=None, usuario: Optional[str] = None):
         self.w = w                      # cliente usado nas ações (usuário, se disponível)
         self.w_app = w_app or w         # service principal da app
@@ -39,13 +64,28 @@ class Servicos:
         # IDENTIDADE_APP=app no app.yaml força o uso só da conta de serviço da app.
         if os.environ.get("IDENTIDADE_APP", "auto").lower() == "app":
             token = None
+        motivo = None
         if token:
             w = WorkspaceClient(host=w_app.config.host, token=token, auth_type="pat")
-            sv = cls(w, "usuario", w_app, usuario)
+            faltando = escopos_faltando(w)
+            if faltando:
+                # Token sem os escopos: tudo passa a rodar com a conta de serviço da app.
+                motivo = (
+                    "O seu token chegou sem os escopos " + ", ".join(f"`{e}`" for e in faltando)
+                    + " (user authorization da app). Usando a conta de serviço da app em tudo."
+                )
+                sv = cls(w_app, "app", w_app, usuario)
+            else:
+                sv = cls(w, "usuario", w_app, usuario)
         else:
             sv = cls(w_app, "app", w_app, usuario)
         sv.token_hash = hash(token) if token else None
+        sv.motivo = motivo
         return sv
+
+    @property
+    def id_conta_servico(self) -> str:
+        return getattr(getattr(self.w_app, "config", None), "client_id", None) or "?"
 
     # ------------------------------------------------------------ descoberta
     def recursos(self) -> Recursos:

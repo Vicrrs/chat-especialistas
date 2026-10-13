@@ -139,8 +139,8 @@ with st.sidebar:
         st.success(f"Conectado como **{sv.usuario or 'você'}**. A app usa as suas permissões.")
     else:
         st.warning(
-            "A app está usando a **própria conta de serviço** (user authorization desligada). "
-            "Ela só enxerga o que foi concedido a essa conta. Veja o README para ligar."
+            (sv.motivo or "A app está usando a **própria conta de serviço**.")
+            + f"\n\nEla só enxerga o que foi concedido a ela (application id `{sv.id_conta_servico}`)."
         )
     with st.expander("🩺 Diagnóstico de acesso"):
         host = getattr(getattr(sv.w_app, "config", None), "host", "?")
