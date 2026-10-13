@@ -143,6 +143,15 @@ def mensagem_erro(e: Exception) -> str:
             "Authorization → User authorization, adicione o escopo, salve e reabra a app em uma aba "
             "anônima (para autorizar de novo)."
         )
+    if "unable to parse response" in texto:
+        status = re.search(r"<\s*(\d{3}[^\n`]*)", texto)
+        corpo = re.findall(r"<\s*([^\n`]+)", texto)
+        detalhe = status.group(1).strip() if status else "status desconhecido"
+        trecho = " ".join(c.strip() for c in corpo[1:4])[:160]
+        return (
+            f"o Databricks respondeu HTTP {detalhe} sem JSON ({trecho}). "
+            "Abra '🩺 Diagnóstico de acesso' na barra lateral para ver o motivo."
+        )
     return texto.split(" Config: ")[0][:300]
 
 
