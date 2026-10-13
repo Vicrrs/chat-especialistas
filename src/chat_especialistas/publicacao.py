@@ -89,7 +89,7 @@ def recursos_mlflow(cfg: AppConfig) -> Dict[str, Any]:
 
 
 def dependencias(raiz: Path) -> List[str]:
-    with open(Path(raiz) / "requirements.txt", encoding="utf-8") as f:
+    with open(Path(raiz) / "requirements-agente.txt", encoding="utf-8") as f:
         return [l.strip() for l in f if l.strip() and not l.strip().startswith(PACOTES_EXCLUIDOS)]
 
 
