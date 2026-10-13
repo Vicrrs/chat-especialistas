@@ -29,9 +29,29 @@ import os
 import sys
 from pathlib import Path
 
-RAIZ = Path(os.path.abspath(".."))
+
+def achar_raiz() -> Path:
+    """Pasta do repositório (a que tem src/chat_especialistas), a partir de onde o notebook está."""
+    candidatos = [Path(os.getcwd())]
+    try:
+        caminho_nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+        candidatos.append(Path("/Workspace" + caminho_nb).parent)
+    except Exception:  # noqa: BLE001
+        pass
+    for base in candidatos:
+        for pasta in [base, *base.parents]:
+            if (pasta / "src" / "chat_especialistas").is_dir():
+                return pasta
+    raise RuntimeError(
+        "Não achei a pasta do projeto. Este notebook precisa estar em notebooks/ dentro do Git folder "
+        "do repositório (faça Pull para pegar a versão mais nova)."
+    )
+
+
+RAIZ = achar_raiz()
 sys.path.insert(0, str(RAIZ / "src"))
 sys.path.insert(0, str(RAIZ))
+print("Projeto:", RAIZ)
 
 from databricks.sdk import WorkspaceClient
 from databricks_langchain import ChatDatabricks
@@ -45,6 +65,15 @@ from chat_especialistas.publicacao import avaliar_roteamento, registrar_e_public
 w = WorkspaceClient()
 usuario = spark.sql("SELECT current_user()").first()[0]
 EXPERIMENTO = f"/Users/{usuario}/chat_especialistas"
+
+# Checagem rápida: aqui tudo roda COMO VOCÊ (sem escopos de app, sem conta de serviço).
+from chat_especialistas.configurador.descoberta import descobrir
+
+_r = descobrir(w)
+print(f"Conectado como {usuario}: {len(_r.llms_chat)} LLMs de chat, {len(_r.embeddings)} embeddings, "
+      f"{len(_r.genies)} Genie Spaces, {len(_r.warehouses)} SQL Warehouses.")
+for _a in _r.avisos:
+    print("⚠️", _a)
 
 
 def criar_llm(endpoint: str):
@@ -74,6 +103,7 @@ assistente = Assistente(
     avaliar=avaliar,
     publicar=publicar,
     contar_documentos=contar_documentos,
+    recursos=_r,
 )
 assistente.mostrar()
 
