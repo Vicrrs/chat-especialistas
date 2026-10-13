@@ -52,8 +52,12 @@ ss = st.session_state
 
 # =================================================================== estado
 def servicos() -> Servicos:
-    if "servicos" not in ss:
-        ss.servicos = Servicos.do_contexto(dict(st.context.headers))
+    """Recria os clientes quando o token do usuário muda (ele é renovado a cada requisição)."""
+    headers = dict(st.context.headers or {})
+    token = {k.lower(): v for k, v in headers.items()}.get("x-forwarded-access-token")
+    atual = ss.get("servicos")
+    if atual is None or (token and getattr(atual, "token_hash", None) != hash(token)):
+        ss.servicos = Servicos.do_contexto(headers, w_app=getattr(atual, "w_app", None))
     return ss.servicos
 
 
@@ -138,6 +142,12 @@ with st.sidebar:
             "A app está usando a **própria conta de serviço** (user authorization desligada). "
             "Ela só enxerga o que foi concedido a essa conta. Veja o README para ligar."
         )
+    with st.expander("🩺 Diagnóstico de acesso"):
+        host = getattr(getattr(sv.w_app, "config", None), "host", "?")
+        st.caption(f"Host: `{host}` · identidade: **{sv.identidade}**")
+        if st.button("Testar acesso à API", use_container_width=True):
+            st.dataframe(pd.DataFrame(sv.diagnostico()), hide_index=True, use_container_width=True)
+            st.caption("200 = ok · 401/403 = token sem permissão/escopo · 30x = redirecionamento para login.")
     st.markdown("#### Projeto")
     st.caption("Onde ficam a configuração, os documentos, o LLMOps e o modelo registrado.")
     novo_cat = st.text_input("Catálogo", ss.catalogo)
