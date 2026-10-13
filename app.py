@@ -23,6 +23,7 @@ RAIZ = Path(__file__).resolve().parent
 sys.path.insert(0, str(RAIZ / "src"))
 
 from chat_especialistas.app_servicos import Servicos, extrair_resposta  # noqa: E402
+from chat_especialistas.configurador.descoberta import mensagem_erro  # noqa: E402
 from chat_especialistas.configurador.estudo import EstudoAgente, estudar_agente  # noqa: E402
 from chat_especialistas.configurador.gerador import (  # noqa: E402
     PRECO_LLAMA_70B,
@@ -75,7 +76,7 @@ def salvar(msg: str | None = None) -> bool:
         return True
     except Exception as e:  # noqa: BLE001
         st.error(
-            f"Não consegui salvar em `{caminho('assistente_estado.json')}`: {e}\n\n"
+            f"Não consegui salvar em `{caminho('assistente_estado.json')}`: {mensagem_erro(e)}\n\n"
             "Na aba **1 · Modelos e Genies**, escolha um SQL Warehouse e clique em **Salvar escolhas** "
             "para criar o schema e os volumes do projeto."
         )
@@ -96,7 +97,7 @@ def cache(chave: str, func, *args):
         try:
             ss._cache[k] = func(*args)
         except Exception as e:  # noqa: BLE001
-            st.warning(f"Não foi possível listar {chave}: {e}")
+            st.warning(f"Não foi possível listar {chave}: {mensagem_erro(e)}")
             ss._cache[k] = []
     return ss._cache[k]
 
