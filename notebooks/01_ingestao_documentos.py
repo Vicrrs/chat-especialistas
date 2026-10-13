@@ -10,7 +10,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -q -r ../requirements.txt
+# MAGIC %pip install -q -r ../requirements-agente.txt
 # MAGIC %restart_python
 
 # COMMAND ----------
