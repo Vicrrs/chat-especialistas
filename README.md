@@ -28,38 +28,62 @@ se der erro e responde com os números, a interpretação e o SQL usado.
                           └─ perguntar_genie           (opcional: Genie Space do domínio)
 ```
 
-## Como começar (sem editar código)
+## Como começar: app Streamlit no Databricks
 
-1. **Clone no Databricks:** *Workspace → Create → Git folder* e cole a URL deste repositório.
-2. Abra **`notebooks/00_COMECE_AQUI`**, conecte a um cluster (DBR 15.4 LTS+ ou Serverless) e clique em **Run all**.
-3. O assistente aparece no fim da página, em 4 abas:
+A configuração é feita numa **app Streamlit** (Databricks Apps) com 5 abas:
 
 | Aba | O que acontece |
 |---|---|
-| **1 · Modelos e Genies** | Lista **todas as IAs** do workspace (endpoints de chat e de embeddings: Foundation Models, modelos externos e customizados), os **Genie Spaces** e os **SQL Warehouses** que você tem permissão para usar. Você escolhe a IA do Agente 01, a dos especialistas, os Genies liberados, o warehouse, onde gravar o projeto e o preço dos modelos (LLMOps). |
-| **2 · Agentes** | Para cada agente: nome, **prompt de negócio** (o que há nas tabelas, qual regra, como o negócio calcula as métricas), **tabelas** escolhidas navegando no Unity Catalog, Genie opcional e documentação opcional. Também cria um agente por Genie com um clique. |
-| **3 · Estudar tabelas** | O sistema **estuda** as tabelas de cada agente: esquema, comentários, perfil dos dados (nulos, distintos, mínimo/máximo, valores mais comuns) e amostra. Com isso e o seu prompt, o LLM escreve o conhecimento do agente: descrição para o roteador, perguntas de exemplo e de teste, o que significa cada tabela/coluna, instruções de métricas e SQLs de exemplo. **Cada SQL é executado**; os que falham voltam uma vez para correção e, se continuarem falhando, são descartados. Você revisa e ajusta tudo antes de seguir. |
-| **4 · Agente geral** | Gera o `config/agents.yaml`, indexa documentos (se houver), **avalia o roteamento** do Agente 01 com as perguntas de teste do estudo e **registra e publica** o endpoint (Model Serving + Review App). |
+| **1 · Modelos e Genies** | Lista **todas as IAs** do workspace (endpoints de chat e de embeddings), os **Genie Spaces** e os **SQL Warehouses** que você pode usar. Você escolhe a IA do Agente 01, a dos especialistas, os Genies liberados, o warehouse e o preço dos modelos (LLMOps). |
+| **2 · Agentes** | Para cada agente: nome, **prompt de negócio**, **tabelas** escolhidas navegando por catálogo → schema → tabela, Genie opcional e documentação opcional. Um botão cria um agente por Genie. |
+| **3 · Estudar tabelas** | O sistema **estuda** as tabelas de cada agente no SQL Warehouse (esquema, comentários, nulos, distintos, mínimo/máximo, valores mais comuns, amostra) e, com o seu prompt, escreve o conhecimento do agente. Cada SQL de exemplo é **executado**; só os que rodam entram. Você revisa e edita tudo. |
+| **4 · Agente geral** | Gera o `agents.yaml` (no Volume do projeto) e dispara um **job** (`notebooks/04_publicar_job`) que indexa documentos, avalia o roteamento, registra no Unity Catalog e publica o endpoint + Review App. A aba mostra o progresso, a acurácia do roteamento e o endpoint. |
+| **5 · Conversar** | Testa o agente publicado: resposta, agentes acionados, SQL, tabela de resultado, tokens e US$. |
 
-As escolhas ficam em `config/assistente_estado.json`: dá para fechar e continuar depois. Mudou um
-agente? Volte, estude de novo só ele e clique em *Gerar agente geral* (o `agents.yaml` anterior vira backup).
+### Criar a app a partir do Git folder
 
+1. **Compute → Apps → Create app → Create a custom app**. Dê um nome (ex.: `chat-especialistas`) e crie.
+2. Na página da app, em **Configure → User authorization**, adicione os escopos:
+   `sql`, `model-serving`, `genie`, `files`, `catalog.catalogs:read`, `catalog.schemas:read`, `catalog.tables:read`.
+   Assim a app age **como quem está logado** e mostra os modelos, tabelas e Genies que essa pessoa enxerga.
+   (Se a opção não aparecer, um admin precisa habilitar *user authorization* para Apps no workspace.)
+3. Clique em **Deploy** e escolha como **source code path a pasta raiz do Git folder** (a que contém `app.py`
+   e `app.yaml`, ex.: `/Workspace/Users/voce@empresa.com/chat-especialistas`). Não escolha a pasta `notebooks`.
+4. Aguarde o status **Running** e abra a URL da app.
+5. Depois de um `git pull` no Git folder, clique em **Deploy** de novo para a app pegar o código novo.
+
+A app instala o `requirements.txt` da raiz (leve: Streamlit + SDK). O agente usa `requirements-agente.txt`.
+
+**Conta de serviço da app** (aba *Authorization* da app): só é usada se a *user authorization* estiver
+desligada, ou como plano B para disparar o job de publicação. Nesse caso, dê a ela `SELECT` nas tabelas,
+`CAN USE` no warehouse, `CAN QUERY` nos endpoints e acesso aos Genies.
+
+**O job de publicação** roda em computação serverless. Se o workspace não tiver serverless para jobs,
+defina `CLUSTER_ID_PUBLICACAO` no `app.yaml`. Se a app não descobrir a pasta do repositório sozinha,
+defina `CAMINHO_REPO`.
+
+Prefere notebook? `notebooks/00_COMECE_AQUI` tem o mesmo assistente com ipywidgets.
 Sem dados ainda? Rode `notebooks/exemplo_dados_ficticios` para criar tabelas fictícias de crédito e cobrança.
 
 ## Estrutura
 
 ```
-notebooks/00_COMECE_AQUI.py           # ⭐ assistente de configuração (abra este)
+app.py · app.yaml · requirements.txt  # ⭐ app Streamlit (Databricks Apps): configurador + chat de teste
+notebooks/00_COMECE_AQUI.py           # mesmo assistente em notebook (ipywidgets)
+notebooks/04_publicar_job.py          # job disparado pela app: indexa, avalia, registra e publica
 notebooks/01_ingestao_documentos.py   # reindexar documentos quando mudarem
 notebooks/02_registrar_e_publicar.py  # conversar com o agente, avaliar e republicar
 notebooks/03_llmops_painel.py         # tabela Delta de LLMOps, views, alerta de orçamento, job
 notebooks/exemplo_dados_ficticios.py  # (opcional) tabelas fictícias para testar
-config/agents.yaml                    # configuração gerada pelo assistente (editável à mão)
+config/agents.yaml                    # exemplo; a app grava a configuração real no Volume do projeto
+requirements-agente.txt               # dependências do agente (notebooks e endpoint)
 src/chat_especialistas/
     configurador/descoberta.py        # lista IAs, Genies, warehouses, catálogos/schemas/tabelas
     configurador/estudo.py            # perfil das tabelas + conhecimento gerado + validação dos SQLs
     configurador/gerador.py           # escolhas do assistente → agents.yaml
-    configurador/interface.py         # as 4 abas (ipywidgets)
+    configurador/interface.py         # versão notebook (ipywidgets)
+    configurador/llm_sdk.py           # LLM via SDK com a identidade de quem usa a app
+    app_servicos.py                   # tudo o que a app faz no Databricks (descoberta, Volume, job, chat)
     graph.py                          # grafo LangGraph: Agente 01 → detector de intenção → especialistas
     bi_agent.py                       # especialista como agente de BI (pensar → ferramenta → observar)
     dados.py                          # Unity Catalog, SQL Warehouse e Genie em produção
@@ -74,7 +98,7 @@ tests/                                # testes locais sem Databricks (LLM simula
 
 ## Permissões necessárias
 
-- **Quem configura** (roda o notebook): `SELECT` nas tabelas escolhidas, `CAN USE` no warehouse e
+- **Quem configura** (usa a app ou o notebook): `SELECT` nas tabelas escolhidas, `CAN USE` no warehouse e
   nos endpoints de modelo, acesso aos Genie Spaces, e `CREATE SCHEMA/TABLE/VOLUME/MODEL` no
   catálogo/schema do projeto.
 - **O endpoint publicado** recebe automaticamente credenciais para os recursos declarados (LLMs,
@@ -186,7 +210,7 @@ notebooks/03_llmops_painel ─────────┘──► tabela Delta 
 ## Rodar os testes localmente
 
 ```bash
-pip install langgraph langchain-core pyyaml pydantic sqlglot databricks-sdk pytest "mlflow-skinny>=3.1" sqlalchemy alembic
+pip install -r requirements-agente.txt -r requirements.txt "mlflow-skinny>=3.1" sqlalchemy alembic
 pytest -q
 ```
 
