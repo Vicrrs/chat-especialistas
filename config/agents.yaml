@@ -1,0 +1,145 @@
+# =====================================================================
+# Configuração central do chat multi-especialistas.
+# Para adicionar o "Agente especialista n+1", basta acrescentar um item
+# em `especialistas` e carregar os documentos dele (notebook 01).
+# Nenhuma alteração de código é necessária.
+# =====================================================================
+
+llm:
+  # Endpoints de Foundation Model APIs (ou endpoints externos) do seu workspace.
+  # Confira os nomes disponíveis em: Serving > Endpoints.
+  endpoint_roteador: databricks-meta-llama-3-3-70b-instruct
+  endpoint_especialistas: databricks-meta-llama-3-3-70b-instruct
+  temperatura_roteador: 0.0
+  temperatura_especialistas: 0.2
+  max_tokens: 1500
+
+vector_search:
+  endpoint: vs_chat_especialistas
+  # Índice compartilhado; cada especialista filtra pela coluna `especialista`.
+  # Um especialista pode sobrescrever com `indice:` próprio.
+  indice_padrao: main.chat_especialistas.documentos_index
+  tabela_origem: main.chat_especialistas.documentos_chunks
+  # Endpoint de embeddings usado pelo índice (Delta Sync com embeddings gerenciados).
+  # Para melhor qualidade em português, considere um endpoint multilíngue
+  # (ex.: um modelo e5/bge multilíngue servido no Model Serving).
+  modelo_embedding: databricks-gte-large-en
+  colunas: [chunk_id, especialista, fonte, conteudo]
+  coluna_texto: conteudo
+  k: 5
+
+llmops:
+  habilitado: true
+  versao_agente: "1.0.0"
+  # Destinos de cada registro de interação (pergunta, resposta, tokens, US$):
+  #   log          -> linha JSON no log (aparece nos logs do Model Serving)
+  #   mlflow_trace -> tags no trace do MLflow (aba Traces do experimento)
+  #   jsonl        -> arquivo JSONL (use um Volume do UC quando rodar em notebook/job)
+  # O registro SEMPRE vai também em `custom_outputs.llmops` da resposta, e assim
+  # cai automaticamente na inference table do endpoint (tabela Delta).
+  destinos: [log, mlflow_trace]
+  arquivo_jsonl: /Volumes/main/chat_especialistas/llmops/interacoes_dev.jsonl
+  # Gravar o texto da pergunta/resposta? Desligue se houver dados sensíveis (LGPD).
+  registrar_textos: true
+  # Preço de tabela (US$ por 1 milhão de tokens) do pay-per-token do Databricks.
+  # CONFIRME com a página de preços / seu contrato (descontos e região mudam o valor).
+  precos_usd_por_milhao:
+    databricks-meta-llama-3-3-70b-instruct: {input: 0.50, output: 1.50}
+    databricks-gte-large-en: {input: 0.13, output: 0.0}
+  # Usado quando o endpoint não está na tabela acima (propositalmente conservador).
+  preco_padrao_usd_por_milhao: {input: 1.00, output: 3.00}
+
+roteamento:
+  # Abaixo deste valor o Agente 01 pede esclarecimento ao usuário.
+  limiar_confianca: 0.6
+  # Quantas mensagens recentes do histórico o roteador e os especialistas enxergam.
+  janela_historico: 12
+
+agente_principal:
+  nome: Assistente
+  prompt: |
+    Você é o assistente principal da empresa. Você conversa com o usuário,
+    entende o contexto da conversa e encaminha cada pergunta ao especialista
+    correto. Seja cordial, objetivo e responda sempre em português do Brasil.
+
+bi:
+  # SQL Warehouse usado pelos especialistas de BI (Serverless recomendado).
+  # Pegue o ID em SQL Warehouses > (warehouse) > Connection details.
+  warehouse_id: "COLOQUE_O_ID_DO_WAREHOUSE"
+  # servico = credenciais do endpoint (service principal)
+  # usuario = on-behalf-of-user: cada pessoa só enxerga o que tem GRANT no Unity Catalog
+  autenticacao: servico
+  max_linhas: 200            # LIMIT aplicado em toda consulta
+  linhas_para_o_llm: 50      # quantas linhas do resultado o agente "lê"
+  timeout_segundos: 50
+  max_iteracoes: 8           # passos do agente (pensar -> ferramenta -> observar)
+
+especialistas:
+  # Cada especialista é um AGENTE DE BI CONVERSACIONAL:
+  #   - lê as regras de negócio do domínio (documentação no Vector Search);
+  #   - explora as tabelas permitidas (esquema e comentários do Unity Catalog);
+  #   - escreve e executa SQL somente leitura, corrige se der erro;
+  #   - responde com os números, a interpretação e o SQL usado.
+  # Sem a seção `dados`, ele responde só com base na documentação.
+  # Com `genie_space_id`, ele também pode delegar a consulta a um Genie Space.
+
+  - id: credito
+    nome: Especialista em Crédito
+    descricao: >
+      Regras de crédito (limites, score, aprovação/reprovação, revisão de limite)
+      E análises de dados de crédito: carteira, propostas aprovadas/reprovadas,
+      taxa de aprovação, limite concedido, score médio, por período/segmento/produto.
+    exemplos:
+      - Qual o limite máximo para cliente PJ com faturamento de 2 milhões?
+      - Qual foi a taxa de aprovação de propostas PJ no último trimestre?
+      - Quantas propostas foram reprovadas por score baixo em setembro?
+    prompt: |
+      Você é o analista especialista em CRÉDITO da empresa.
+    dados:
+      tabelas:
+        - main.credito.propostas
+        - main.credito.clientes
+      instrucoes: |
+        - "Taxa de aprovação" = propostas com status = 'APROVADA' / total de propostas.
+        - Datas de proposta estão em `propostas.data_proposta` (DATE).
+        - Valores monetários estão em reais (R$).
+      exemplos_sql:
+        - pergunta: Taxa de aprovação por mês em 2026
+          sql: |
+            SELECT date_trunc('month', data_proposta) AS mes,
+                   avg(CASE WHEN status = 'APROVADA' THEN 1 ELSE 0 END) AS taxa_aprovacao
+            FROM main.credito.propostas
+            WHERE year(data_proposta) = 2026
+            GROUP BY 1 ORDER BY 1
+
+  - id: cobranca
+    nome: Especialista em Cobrança
+    descricao: >
+      Regras de cobrança (régua, prazos, multa/juros, acordos, negativação, descontos)
+      E análises de dados de cobrança: inadimplência, valor em atraso, faixas de atraso,
+      acordos fechados, recuperação, por período/segmento/região.
+    exemplos:
+      - Com quantos dias de atraso o cliente é negativado?
+      - Qual o valor total em atraso acima de 30 dias por região?
+      - Como evoluiu a inadimplência nos últimos 6 meses?
+    prompt: |
+      Você é o analista especialista em COBRANÇA da empresa.
+    dados:
+      tabelas:
+        - main.cobranca.parcelas
+        - main.cobranca.acordos
+      instrucoes: |
+        - Inadimplente = parcela com dias_atraso > 30 (conforme régua de cobrança).
+        - Use `parcelas.valor_aberto` para valor em atraso.
+    # genie_space_id: "01ef..."   # opcional: delega consultas a um Genie Space deste domínio
+
+  - id: cadastro
+    nome: Especialista em Cadastro
+    descricao: >
+      Regras de cadastro: abertura e atualização de cadastro, documentos obrigatórios,
+      KYC, validação de dados cadastrais e encerramento de conta.
+    exemplos:
+      - Quais documentos são necessários para abrir conta PJ?
+      - Como atualizar o endereço de um cliente?
+    prompt: |
+      Você é o especialista em regras de CADASTRO. Responda com base na documentação.
