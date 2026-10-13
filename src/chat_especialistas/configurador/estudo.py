@@ -88,6 +88,37 @@ class SparkFonteEstudo:
         return f"Genie Space '{g.title}': {g.description or '(sem descrição)'}"
 
 
+class WarehouseFonteEstudo:
+    """Usa um SQL Warehouse + Unity Catalog (é o que a app Streamlit usa; não precisa de Spark)."""
+
+    def __init__(self, w, warehouse_id: str, max_linhas: int = 1000, timeout_segundos: int = 180):
+        self.w = w
+        self.warehouse_id = warehouse_id
+        self.max_linhas = max_linhas
+        self.timeout = timeout_segundos
+        self._info: Dict[str, Any] = {}
+
+    def _tabela(self, tabela: str):
+        if tabela not in self._info:
+            self._info[tabela] = self.w.tables.get(tabela)
+        return self._info[tabela]
+
+    def colunas(self, tabela: str) -> List[Coluna]:
+        return [Coluna(c.name, (c.type_text or "").lower(), c.comment or "") for c in self._tabela(tabela).columns or []]
+
+    def comentario_tabela(self, tabela: str) -> str:
+        return self._tabela(tabela).comment or ""
+
+    def consultar(self, sql: str) -> ResultadoSQL:
+        from ..dados import executar_sql_warehouse
+
+        return executar_sql_warehouse(self.w, self.warehouse_id, sql, self.max_linhas, self.timeout)
+
+    def descrever_genie(self, space_id: str) -> str:
+        g = self.w.genie.get_space(space_id)
+        return f"Genie Space '{g.title}': {g.description or '(sem descrição)'}"
+
+
 # ------------------------------------------------------------------ perfil
 @dataclass
 class PerfilColuna:
@@ -123,6 +154,17 @@ def _curto(v: Any) -> Any:
     return s if len(s) <= MAX_CHARS_VALOR else s[: MAX_CHARS_VALOR - 1] + "…"
 
 
+def _num(v: Any) -> Any:
+    """O SQL Warehouse devolve tudo como texto; converte contagens para número."""
+    if v is None or isinstance(v, (int, float)):
+        return v
+    try:
+        f = float(v)
+        return int(f) if f.is_integer() else f
+    except (TypeError, ValueError):
+        return v
+
+
 def _eh(tipo: str, prefixos) -> bool:
     return tipo.lower().startswith(prefixos)
 
@@ -143,7 +185,7 @@ def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] 
     if r.erro:
         p.erros.append(f"contagem: {r.erro}")
     elif r.linhas:
-        p.total_linhas = int(r.linhas[0][0])
+        p.total_linhas = int(_num(r.linhas[0][0]))
 
     base = f"(SELECT * FROM {tabela} LIMIT {LINHAS_PERFIL}) AS base"
     simples = [c for c in p.colunas if not _eh(c.tipo, TIPOS_COMPLEXOS)]
@@ -161,11 +203,11 @@ def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] 
             p.erros.append(f"estatísticas: {r.erro}")
         elif r.linhas:
             v = dict(zip(r.colunas, r.linhas[0]))
-            total = v.get("total") or 0
+            total = _num(v.get("total")) or 0
             for i, c in enumerate(simples):
-                nn = v.get(f"nn_{i}") or 0
+                nn = _num(v.get(f"nn_{i}")) or 0
                 c.nulos_pct = round(100 * (1 - nn / total), 1) if total else None
-                c.distintos = v.get(f"d_{i}")
+                c.distintos = _num(v.get(f"d_{i}"))
                 c.minimo, c.maximo = _curto(v.get(f"mn_{i}")), _curto(v.get(f"mx_{i}"))
 
     categoricas = [
@@ -177,7 +219,7 @@ def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] 
             f"SELECT {_q(c.nome)} AS valor, count(*) AS n FROM {base} GROUP BY {_q(c.nome)} ORDER BY n DESC LIMIT 10"
         )
         if not r.erro:
-            c.top_valores = [[_curto(a), b] for a, b in r.linhas]
+            c.top_valores = [[_curto(a), _num(b)] for a, b in r.linhas]
 
     r = fonte.consultar(f"SELECT * FROM {tabela} LIMIT 5")
     if r.erro:
