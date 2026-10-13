@@ -167,6 +167,14 @@ def _str_multilinha(dumper, valor: str):
 _Dumper.add_representer(str, _str_multilinha)
 
 
+def config_para_yaml(dados: Dict[str, Any]) -> str:
+    cabecalho = (
+        "# Gerado pelo assistente de configuração (app Streamlit ou notebooks/00_COMECE_AQUI).\n"
+        "# Pode editar à mão; gerar de novo sobrescreve (com backup).\n"
+    )
+    return cabecalho + yaml.dump(dados, Dumper=_Dumper, allow_unicode=True, sort_keys=False, width=110)
+
+
 def salvar_config(dados: Dict[str, Any], caminho: Path) -> Optional[Path]:
     """Grava o YAML; o anterior vira agents.yaml.<data>.bak. Devolve o caminho do backup."""
     caminho = Path(caminho)
@@ -174,21 +182,30 @@ def salvar_config(dados: Dict[str, Any], caminho: Path) -> Optional[Path]:
     if caminho.exists():
         backup = caminho.with_name(f"{caminho.name}.{datetime.now():%Y%m%d_%H%M%S}.bak")
         shutil.copy2(caminho, backup)
-    cabecalho = (
-        "# Gerado pelo assistente (notebooks/00_COMECE_AQUI).\n"
-        "# Pode editar à mão; rodar o assistente de novo sobrescreve (com backup).\n"
-    )
-    texto = yaml.dump(dados, Dumper=_Dumper, allow_unicode=True, sort_keys=False, width=110)
-    caminho.write_text(cabecalho + texto, encoding="utf-8")
+    caminho.write_text(config_para_yaml(dados), encoding="utf-8")
     return backup
 
 
 # ------------------------------------------------------- estado do assistente
+def estado_para_json(sel: Selecao, agentes: List[AgenteRascunho], extra: Optional[Dict[str, Any]] = None) -> str:
+    d = {"selecao": asdict(sel), "agentes": [asdict(a) for a in agentes], **(extra or {})}
+    return json.dumps(d, ensure_ascii=False, indent=2, default=str)
+
+
+def estado_de_json(texto: Optional[str]) -> tuple[Selecao, List[AgenteRascunho], Dict[str, Any]]:
+    if not texto:
+        return Selecao(), [], {}
+    d = json.loads(texto)
+    campos_sel = Selecao.__dataclass_fields__
+    campos_ag = AgenteRascunho.__dataclass_fields__
+    sel = Selecao(**{k: v for k, v in d.get("selecao", {}).items() if k in campos_sel})
+    agentes = [AgenteRascunho(**{k: v for k, v in a.items() if k in campos_ag}) for a in d.get("agentes", [])]
+    extra = {k: v for k, v in d.items() if k not in ("selecao", "agentes")}
+    return sel, agentes, extra
+
+
 def salvar_estado(caminho: Path, sel: Selecao, agentes: List[AgenteRascunho]) -> None:
-    Path(caminho).write_text(
-        json.dumps({"selecao": asdict(sel), "agentes": [asdict(a) for a in agentes]}, ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
+    Path(caminho).write_text(estado_para_json(sel, agentes), encoding="utf-8")
 
 
 def carregar_estado(caminho: Path) -> tuple[Selecao, List[AgenteRascunho]]:
