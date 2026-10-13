@@ -1,0 +1,23 @@
+# Databricks Apps: configuração da app Streamlit (código-fonte = raiz deste repositório).
+command:
+  - streamlit
+  - run
+  - app.py
+  - --server.port
+  - $DATABRICKS_APP_PORT
+  - --server.address
+  - 0.0.0.0
+  - --server.headless
+  - "true"
+env:
+  # Projeto aberto por padrão (dá para trocar na barra lateral da app).
+  - name: PROJETO_CATALOGO
+    value: main
+  - name: PROJETO_SCHEMA
+    value: chat_especialistas
+  # Opcional: pasta do repositório no workspace, se a app não conseguir descobrir sozinha.
+  # - name: CAMINHO_REPO
+  #   value: /Workspace/Users/voce@empresa.com/chat-especialistas
+  # Opcional: cluster para o job de publicação (sem isso, usa computação serverless).
+  # - name: CLUSTER_ID_PUBLICACAO
+  #   value: 0123-456789-abcdefgh
