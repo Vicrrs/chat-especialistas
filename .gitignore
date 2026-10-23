@@ -228,3 +228,6 @@ __marimo__/
 *.jks
 credentials.json
 service-account*.json
+
+# Artefatos locais do MLflow (gerados pelos testes)
+mlruns/
