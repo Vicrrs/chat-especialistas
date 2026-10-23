@@ -121,7 +121,8 @@ class ChatEspecialistasAgent(ResponsesAgent):
         custom = {
             "intencao": estado.get("intencao"),
             "especialistas": estado.get("especialistas", []),
-            "pergunta_reescrita": estado.get("pergunta_reescrita"),
+            # custom_outputs também vai para a inference table: respeita registrar_textos (LGPD).
+            "pergunta_reescrita": estado.get("pergunta_reescrita") if self.cfg.llmops.registrar_textos else None,
             "confianca": estado.get("confianca"),
             "fontes": fontes,
             # BI: SQL executado e o último resultado de cada especialista (para tabela/gráfico no front-end)
