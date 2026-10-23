@@ -19,6 +19,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..dados import ResultadoSQL
+from ..seguranca import citar
 from ..sql_guard import SQLNaoPermitido, validar_sql
 
 TIPOS_COMPLEXOS = ("array", "map", "struct", "binary", "variant", "geography", "geometry")
@@ -172,6 +173,7 @@ def _eh(tipo: str, prefixos) -> bool:
 def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] = lambda _: None) -> PerfilTabela:
     p = PerfilTabela(tabela=tabela)
     try:
+        ref = citar(tabela)  # nome validado e entre crases: é o único texto variável nos SQLs abaixo
         cols = fonte.colunas(tabela)
     except Exception as e:  # noqa: BLE001
         p.erros.append(f"não foi possível ler as colunas: {e}")
@@ -181,13 +183,13 @@ def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] 
     if len(cols) > MAX_COLUNAS:
         p.erros.append(f"tabela com {len(cols)} colunas; perfil feito nas {MAX_COLUNAS} primeiras")
 
-    r = fonte.consultar(f"SELECT count(*) AS n FROM {tabela}")
+    r = fonte.consultar(f"SELECT count(*) AS n FROM {ref}")  # nosec B608
     if r.erro:
         p.erros.append(f"contagem: {r.erro}")
     elif r.linhas:
         p.total_linhas = int(_num(r.linhas[0][0]))
 
-    base = f"(SELECT * FROM {tabela} LIMIT {LINHAS_PERFIL}) AS base"
+    base = f"(SELECT * FROM {ref} LIMIT {LINHAS_PERFIL}) AS base"  # nosec B608
     simples = [c for c in p.colunas if not _eh(c.tipo, TIPOS_COMPLEXOS)]
     if simples:
         partes = ["count(*) AS total"]
@@ -198,7 +200,7 @@ def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] 
                 f"min({_q(c.nome)}) AS mn_{i}",
                 f"max({_q(c.nome)}) AS mx_{i}",
             ]
-        r = fonte.consultar(f"SELECT {', '.join(partes)} FROM {base}")
+        r = fonte.consultar(f"SELECT {', '.join(partes)} FROM {base}")  # nosec B608
         if r.erro:
             p.erros.append(f"estatísticas: {r.erro}")
         elif r.linhas:
@@ -216,12 +218,12 @@ def perfilar_tabela(fonte: FonteEstudo, tabela: str, log: Callable[[str], None] 
     ][:MAX_COLUNAS_TOP]
     for c in categoricas:
         r = fonte.consultar(
-            f"SELECT {_q(c.nome)} AS valor, count(*) AS n FROM {base} GROUP BY {_q(c.nome)} ORDER BY n DESC LIMIT 10"
+            f"SELECT {_q(c.nome)} AS valor, count(*) AS n FROM {base} GROUP BY {_q(c.nome)} ORDER BY n DESC LIMIT 10"  # nosec B608
         )
         if not r.erro:
             c.top_valores = [[_curto(a), _num(b)] for a, b in r.linhas]
 
-    r = fonte.consultar(f"SELECT * FROM {tabela} LIMIT 5")
+    r = fonte.consultar(f"SELECT * FROM {ref} LIMIT 5")  # nosec B608
     if r.erro:
         p.erros.append(f"amostra: {r.erro}")
     else:

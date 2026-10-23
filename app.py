@@ -5,7 +5,8 @@ Abas:
   2 · Agentes            cria os agentes: nome, prompt de negócio, tabelas, Genie, documentos
   3 · Estudar tabelas    o sistema estuda as tabelas e escreve o conhecimento de cada agente
   4 · Agente geral       gera o agents.yaml e dispara o job que avalia, registra e publica
-  5 · Conversar          testa o agente publicado
+  5 · Conversar          testa o agente publicado (com 👍/👎 que alimentam a melhoria)
+  6 · Melhorar Genies    benchmark, feedback, propostas para aprovar e atualização dos Genie Spaces
 """
 from __future__ import annotations
 
@@ -24,12 +25,15 @@ sys.path.insert(0, str(RAIZ / "src"))
 
 from chat_especialistas.app_servicos import Servicos, extrair_resposta  # noqa: E402
 from chat_especialistas.configurador.descoberta import mensagem_erro  # noqa: E402
+from chat_especialistas.configurador import melhoria  # noqa: E402
 from chat_especialistas.configurador.estudo import EstudoAgente, estudar_agente  # noqa: E402
+from chat_especialistas.configurador.genie_espaco import publicar_espaco  # noqa: E402
 from chat_especialistas.configurador.gerador import (  # noqa: E402
     PRECO_LLAMA_70B,
     AgenteRascunho,
     Selecao,
     config_para_yaml,
+    conhecimento,
     estado_de_json,
     estado_para_json,
     gerar_config,
@@ -85,6 +89,19 @@ def salvar(msg: str | None = None) -> bool:
             "para criar o schema e os volumes do projeto."
         )
         return False
+
+
+def carregar_melhoria() -> melhoria.EstadoMelhoria:
+    """Lido sempre do Volume: o job agendado (notebook 05) também grava neste arquivo."""
+    return melhoria.EstadoMelhoria.from_json(servicos().ler(caminho("melhoria.json")))
+
+
+def mudar_melhoria(func):
+    """Lê, aplica `func(estado)` e grava logo em seguida (evita sobrescrever o que o job gravou)."""
+    est = carregar_melhoria()
+    resultado = func(est)
+    servicos().gravar(caminho("melhoria.json"), est.to_json())
+    return resultado
 
 
 def recursos(forcar: bool = False):
@@ -164,8 +181,8 @@ with st.sidebar:
         st.metric("Gasto no teste do chat", f"US$ {ss.gasto_chat['usd']:.4f}")
         st.caption(f"{ss.gasto_chat['tokens']} tokens")
 
-aba1, aba2, aba3, aba4, aba5 = st.tabs(
-    ["1 · Modelos e Genies", "2 · Agentes", "3 · Estudar tabelas", "4 · Agente geral", "5 · Conversar"]
+aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs(
+    ["1 · Modelos e Genies", "2 · Agentes", "3 · Estudar tabelas", "4 · Agente geral", "5 · Conversar", "6 · Melhorar Genies"]
 )
 
 # ======================================================================= aba 1
@@ -278,6 +295,8 @@ def _salvar_agente():
             a.id = f"{a.id}_{len(ss.agentes) + 1}"
         ss.agentes.append(a)
     tabelas = sorted({t.lower() for t in ss.ed_tabelas})
+    if (ss.ed_genie or None) != a.genie_space_id:
+        a.genie_gerado = False  # trocou de Genie: o novo não é mantido pela app
     mudou = tabelas != a.tabelas or (ss.ed_genie or None) != a.genie_space_id or ss.ed_prompt != a.prompt_negocio
     a.nome, a.prompt_negocio, a.tabelas = nome, ss.ed_prompt, tabelas
     a.genie_space_id, a.documentos = ss.ed_genie or None, bool(ss.ed_docs)
@@ -302,6 +321,8 @@ with aba2:
     st.markdown("Cada agente é um especialista numa regra de negócio. Dê a ele **tabelas** e/ou um **Genie** e "
                 "explique o negócio no **prompt**: é isso que ele vai estudar.")
     opcoes = [NOVO] + [a.id for a in ss.agentes]
+    if ss.pop("recarregar_edicao", False) and ss.get("agente_em_edicao") in opcoes:
+        _carregar_edicao()  # a aba 3 criou um Genie para o agente em edição
     if ss.get("agente_em_edicao") not in opcoes:
         ss.agente_em_edicao = opcoes[1] if len(opcoes) > 1 else NOVO
         _carregar_edicao()
@@ -371,7 +392,36 @@ def estudar(alvos):
                 salvar()
                 status.update(label=f"✅ {a.nome}: {len(e.exemplos_sql)} SQL(s) validado(s)", state="complete", expanded=False)
             except Exception as ex:  # noqa: BLE001
-                status.update(label=f"❌ {a.nome}: {ex}", state="error")
+                status.update(label=f"❌ {a.nome}: {mensagem_erro(ex)}", state="error")
+
+
+def publicar_genie(alvos):
+    """Cria/atualiza o Genie Space de cada agente com o que ele sabe (estudo + aprendizados)."""
+    sel, sv = ss.sel, servicos()
+    msgs = []
+    for a in alvos:
+        if not a.benchmark and a.estudo:
+            # Ponto de partida do benchmark: os SQLs validados no estudo (troque por perguntas reais com o tempo).
+            a.benchmark = [dict(x) for x in conhecimento(a).exemplos_sql]
+        try:
+            r = publicar_espaco(sv.w, a, sel.warehouse_id)
+            if a.genie_space_id not in sel.genies:
+                sel.genies.append(a.genie_space_id)
+            if r["criado"]:
+                sel.modo_especialistas = "genie"  # quem cria o Genie quer que o Agente 01 o use (dá para trocar na aba 4)
+            msgs.append(("ok", f"{'Criado' if r['criado'] else 'Atualizado'} o Genie Space de **{a.nome}** · "
+                               f"[abrir no Genie]({sv.url_genie(r['space_id'])})"))
+        except Exception as e:  # noqa: BLE001
+            msgs.append(("erro", f"{a.nome}: {mensagem_erro(e)}"))
+    ss.msgs_genie = msgs
+    ss.recarregar_edicao = True
+    salvar()
+    st.rerun()
+
+
+def mostrar_msgs_genie():
+    for tipo, texto in ss.pop("msgs_genie", []):
+        (st.success if tipo == "ok" else st.error)(texto)
 
 
 def _ler_blocos(texto: str, tabelas):
@@ -400,6 +450,12 @@ with aba3:
         rev_id = c3.selectbox("Agente para revisar", list(rotulos_rev), format_func=rotulos_rev.get)
         if c2.button("🔁 Estudar de novo o agente escolhido"):
             estudar([agente(rev_id)])
+        candidatos = [a for a in ss.agentes if a.estudado and a.tabelas and (a.genie_gerado or not a.genie_space_id)]
+        if st.button(f"🧞 Criar/atualizar o Genie Space de todos os agentes estudados ({len(candidatos)})",
+                     disabled=not candidatos, help="Cada especialista vira um Genie Space com as tabelas, instruções, "
+                     "SQLs validados e benchmark dele. O Agente 01 passa a acionar esses Genies."):
+            publicar_genie(candidatos)
+        mostrar_msgs_genie()
 
         a = agente(rev_id)
         st.divider()
@@ -421,7 +477,19 @@ with aba3:
                     e.descricao_tabelas = _ler_blocos(desc_tabs, a.tabelas)
                     e.instrucoes = instr.strip()
                     a.estudo = e.to_dict()
-                    salvar("Revisão salva")
+                    salvar("Revisão salva" + (" — atualize o Genie Space para levar a revisão." if a.genie_gerado else ""))
+            st.markdown("#### 🧞 Genie Space do agente")
+            if a.genie_space_id and not a.genie_gerado:
+                st.caption("Este agente usa um Genie escolhido à mão; a app não altera esse espaço.")
+            elif not a.tabelas:
+                st.caption("Para virar Genie Space o agente precisa de tabelas.")
+            else:
+                g1, g2 = st.columns([1, 3])
+                if g1.button("🔄 Atualizar Genie Space" if a.genie_gerado else "🧞 Criar Genie Space", key=f"genie_{a.id}"):
+                    publicar_genie([a])
+                if a.genie_gerado:
+                    g2.markdown(f"[Abrir no Genie]({servicos().url_genie(a.genie_space_id)}) · `{a.genie_space_id}` · "
+                                f"{len(a.aprendizados)} aprendizado(s) · {len(a.benchmark)} pergunta(s) no benchmark")
             if e.validacao_sql:
                 st.markdown("#### SQLs de exemplo (executados no estudo)")
                 for v in e.validacao_sql:
@@ -452,6 +520,16 @@ with aba4:
     nome_assistente = st.text_input("Nome do assistente", sel.nome_assistente)
     prompt_geral = st.text_area("Prompt geral (opcional)", sel.prompt_geral, height=110,
                                 placeholder="Contexto da empresa, tom de voz, regras gerais. Em branco = padrão.")
+    com_genie = [a.nome for a in ss.agentes if a.genie_space_id]
+    modo = st.radio(
+        "Como respondem os especialistas que têm Genie Space", ["genie", "bi"], horizontal=True,
+        index=0 if sel.modo_especialistas == "genie" else 1,
+        format_func={"genie": "🧞 Pelo Genie Space (o Agente 01 aciona o Genie do especialista)",
+                     "bi": "🤖 Pelo agente de BI próprio (o Genie vira uma ferramenta dele)"}.get,
+        help="Com Genie, a pergunta vai direto ao Genie Space; se ele falhar e o agente tiver tabelas, "
+             "o agente de BI próprio assume. Especialistas sem Genie sempre usam o agente de BI.",
+    )
+    st.caption(f"Especialistas com Genie: {', '.join(com_genie) or 'nenhum — crie na aba 3'}")
     c1, c2, c3 = st.columns(3)
     indexar = c1.checkbox("Indexar documentos", True)
     avaliar = c2.checkbox("Avaliar o roteamento", True)
@@ -462,7 +540,7 @@ with aba4:
 
     if st.button("🚀 Gerar agente geral", type="primary", disabled=not ss.agentes):
         sel.nome_assistente, sel.prompt_geral = nome_assistente.strip() or "Assistente", prompt_geral
-        sel.catalogo, sel.schema = ss.catalogo, ss.schema
+        sel.catalogo, sel.schema, sel.modo_especialistas = ss.catalogo, ss.schema, modo
         try:
             dados = gerar_config(sel, ss.agentes)
         except Exception as e:  # noqa: BLE001
@@ -484,7 +562,7 @@ with aba4:
                     job = sv.iniciar_publicacao(params)
                     ss.extra["publicacao"] = {**job, "inicio": time.time(), "status": None}
                 except Exception as e:  # noqa: BLE001
-                    st.error(str(e))
+                    st.error(mensagem_erro(e))
                     st.info("Alternativa: abra `notebooks/04_publicar_job`, informe o parâmetro "
                             f"`config_path = {caminho('agents.yaml')}` e clique em Run all.")
             salvar()
@@ -499,7 +577,7 @@ with aba4:
                 pub["status"] = servicos().status_publicacao(pub["run_id"], pub.get("como", "usuario"))
                 salvar()
             except Exception as e:  # noqa: BLE001
-                st.error(f"Não consegui ler o status: {e}")
+                st.error(f"Não consegui ler o status: {mensagem_erro(e)}")
         stt = pub.get("status") or {}
         if not stt.get("terminado"):
             minutos = int((time.time() - pub.get("inicio", time.time())) / 60)
@@ -527,12 +605,42 @@ with aba4:
 
 
 # ======================================================================= aba 5
+def avaliar_resposta(i: int, positivo: bool, comentario: str = ""):
+    """👍/👎: vai para a mensagem no Genie e, se negativo, vira caso a melhorar na aba 6."""
+    m, sv = ss.chat[i], servicos()
+    d = m["detalhes"]
+    pergunta = next((x["content"] for x in reversed(ss.chat[:i]) if x["role"] == "user"), "")
+    consultas = d.get("consultas_sql") or []
+    for c in consultas:
+        if c.get("genie_space_id") and c.get("genie_conversa_id") and c.get("genie_mensagem_id"):
+            try:
+                sv.enviar_feedback_genie(c["genie_space_id"], c["genie_conversa_id"], c["genie_mensagem_id"], positivo, comentario)
+            except Exception as e:  # noqa: BLE001
+                st.warning(f"Não consegui enviar o feedback ao Genie: {mensagem_erro(e)}")
+    if not positivo:
+        casos = []
+        for aid in d.get("especialistas") or []:
+            if agente(aid) is None:
+                continue
+            dele = [c for c in consultas if c.get("especialista") == aid]
+            # A pergunta enviada ao Genie já vem reescrita pelo Agente 01 (sem "e para PJ?").
+            p = next((c.get("objetivo") for c in dele if c.get("via") == "genie" and c.get("objetivo")), pergunta)
+            sql = next((c.get("sql") for c in reversed(dele) if c.get("sql")), "")
+            casos.append(melhoria.caso_do_chat(aid, p, sql, comentario))
+        try:
+            mudar_melhoria(lambda est: est.adicionar_casos(casos))
+        except Exception as e:  # noqa: BLE001
+            st.warning(f"Não consegui registrar o caso: {mensagem_erro(e)}")
+    m["avaliacao"] = "👍" if positivo else "👎 (vai para a aba 6 · Melhorar Genies)"
+    st.rerun()
+
+
 with aba5:
     endpoint = st.text_input("Endpoint do agente", ss.extra.get("endpoint", ""),
                              help="Preenchido automaticamente depois da publicação. Precisa estar Ready.")
     if st.button("🧹 Nova conversa"):
         ss.chat, ss.conversa_id = [], str(uuid.uuid4())
-    for m in ss.chat:
+    for i, m in enumerate(ss.chat):
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
             if m.get("detalhes"):
@@ -545,6 +653,16 @@ with aba5:
                     for esp, dados in (d.get("dados") or {}).items():
                         if dados.get("linhas"):
                             st.dataframe(pd.DataFrame(dados["linhas"], columns=dados["colunas"]), hide_index=True)
+                if m.get("avaliacao"):
+                    st.caption(f"Sua avaliação: {m['avaliacao']}")
+                elif d.get("especialistas"):
+                    f1, f2, _ = st.columns([1, 1, 8])
+                    if f1.button("👍", key=f"bom_{i}"):
+                        avaliar_resposta(i, True)
+                    with f2.popover("👎"):
+                        comentario = st.text_input("O que estava errado?", key=f"comentario_{i}")
+                        if st.button("Enviar", key=f"ruim_{i}"):
+                            avaliar_resposta(i, False, comentario)
     pergunta = st.chat_input("Pergunte algo ao agente geral…", disabled=not endpoint)
     if pergunta:
         ss.chat.append({"role": "user", "content": pergunta})
@@ -553,8 +671,159 @@ with aba5:
             try:
                 texto, detalhes = extrair_resposta(servicos().conversar(endpoint, historico, ss.conversa_id))
             except Exception as e:  # noqa: BLE001
-                texto, detalhes = f"⚠️ Erro ao chamar o endpoint: {e}", {}
+                texto, detalhes = f"⚠️ Erro ao chamar o endpoint: {mensagem_erro(e)}", {}
         ss.chat.append({"role": "assistant", "content": texto, "detalhes": detalhes})
         ss.gasto_chat["tokens"] += detalhes.get("tokens", 0)
         ss.gasto_chat["usd"] += detalhes.get("custo_usd", 0.0)
         st.rerun()
+
+
+# ======================================================================= aba 6
+def rodar_ciclo(a: AgenteRascunho, benchmark: bool):
+    sel, sv = ss.sel, servicos()
+    with st.status(f"Melhorando **{a.nome}**…", expanded=True) as status:
+        try:
+            resumo = mudar_melhoria(lambda est: melhoria.ciclo_melhoria(
+                sv.w, sv.llm(sel.llm_especialistas), sv.fonte_estudo(sel.warehouse_id), [a], est,
+                sel.warehouse_id, benchmark=benchmark, log=st.write,
+            ))
+            r = resumo.get(a.id, {})
+            status.update(label=f"✅ {a.nome}: {r.get('casos_novos', 0)} caso(s) novo(s), {r.get('propostas', 0)} proposta(s)",
+                          state="complete", expanded=False)
+        except Exception as e:  # noqa: BLE001
+            status.update(label=f"❌ {a.nome}: {mensagem_erro(e)}", state="error")
+
+
+def _aprovar(a: AgenteRascunho, pid: str, instrucao: str, sql: str, no_benchmark: bool):
+    def aplicar(est):
+        p = next(x for x in est.propostas if x["id"] == pid)
+        melhoria.aprovar(a, p, instrucao=instrucao, sql=sql, no_benchmark=no_benchmark)
+    mudar_melhoria(aplicar)
+    salvar("Aprovada. Clique em “Atualizar Genie Space” para levar ao Genie.")
+
+
+def _rejeitar(pid: str):
+    def aplicar(est):
+        next(x for x in est.propostas if x["id"] == pid)["status"] = "rejeitada"
+    mudar_melhoria(aplicar)
+
+
+with aba6:
+    st.markdown(
+        "Cada especialista com **Genie Space criado pela app** melhora com o tempo: a app junta as perguntas que "
+        "deram errado (👎 no Genie ou no chat, erros e falhas no **benchmark**), propõe uma instrução ou um SQL "
+        "de exemplo (o SQL é **executado** antes), e **você aprova**. O aprovado vira aprendizado do agente e vai "
+        "para o Genie (e para o agente de BI) na próxima atualização."
+    )
+    geridos = [a for a in ss.agentes if a.genie_gerado and a.genie_space_id]
+    if not geridos:
+        st.info("Nenhum agente tem Genie Space criado pela app. Crie na aba **3 · Estudar tabelas**.")
+    else:
+        est = carregar_melhoria()
+        rot = {a.id: f"{a.nome} · {len(est.pendentes(a.id))} proposta(s) pendente(s)" for a in geridos}
+        a = agente(st.selectbox("Especialista", list(rot), format_func=rot.get, key="melhorar_id"))
+        mostrar_msgs_genie()
+
+        hist = [h for h in est.historico if h.get("agente_id") == a.id and h.get("acuracia") is not None]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Benchmark (última)", f"{hist[-1]['acuracia']:.0%}" if hist else "—",
+                  f"{hist[-1]['acuracia'] - hist[-2]['acuracia']:+.0%}" if len(hist) > 1 else None)
+        m2.metric("Propostas pendentes", len(est.pendentes(a.id)))
+        m3.metric("Casos aguardando proposta", sum(1 for c in est.casos if c["agente_id"] == a.id))
+        m4.metric("Aprendizados aprovados", len(a.aprendizados))
+        if len(hist) > 1:
+            st.line_chart(pd.DataFrame(hist).set_index("quando")["acuracia"], height=180)
+
+        b1, b2, b3 = st.columns(3)
+        if b1.button("🔁 Rodar ciclo de melhoria", type="primary", help="Lê o feedback do Genie, roda o benchmark, "
+                     "verifica mudanças nas tabelas e gera propostas."):
+            rodar_ciclo(a, benchmark=True)
+            st.rerun()
+        if b2.button("📝 Só gerar propostas dos casos", disabled=not any(c["agente_id"] == a.id for c in est.casos)):
+            rodar_ciclo(a, benchmark=False)
+            st.rerun()
+        if b3.button("🚀 Atualizar Genie Space com os aprendizados"):
+            publicar_genie([a])
+
+        mudancas = est.mudancas.get(a.id) or []
+        if mudancas:
+            st.warning("**As tabelas mudaram desde o último estudo:**\n\n" + "\n".join(f"- {x}" for x in mudancas))
+            if st.button("🔎 Estudar de novo (os aprendizados são mantidos)"):
+                estudar([a])
+                mudar_melhoria(lambda e: e.mudancas.pop(a.id, None))
+                ss.msgs_genie = [("ok", f"{a.nome} estudado de novo. Atualize o Genie Space para levar o novo conhecimento.")]
+                st.rerun()
+
+        # ------------------------------------------------------------ propostas
+        st.markdown("#### Propostas para aprovar")
+        pendentes = est.pendentes(a.id)
+        if not pendentes:
+            st.caption("Nenhuma proposta pendente.")
+        for p in pendentes:
+            selo = "✅ SQL executado" if p["validado"] else ("⚠️ SQL não rodou" if p["sql"] else "📝 só instrução")
+            with st.expander(f"{selo} · {p['pergunta']}"):
+                st.caption(f"Origem: {p['detalhe_caso'] or p['origem']} · {p['criada_em']}")
+                if p["diagnostico"]:
+                    st.markdown(f"**Diagnóstico:** {p['diagnostico']}")
+                if p["erro"]:
+                    st.error(p["erro"])
+                with st.form(f"prop_{p['id']}"):
+                    instr = st.text_area("Instrução nova (vazio = nenhuma)", p["instrucao"], height=80)
+                    sql = st.text_area("SQL de exemplo para esta pergunta (vazio = nenhum)", p["sql"], height=160)
+                    bench = st.checkbox("Também incluir no benchmark", True)
+                    c1, c2 = st.columns(2)
+                    if c1.form_submit_button("✅ Aprovar", type="primary"):
+                        _aprovar(a, p["id"], instr, sql, bench)
+                        st.rerun()
+                    if c2.form_submit_button("🗑️ Rejeitar"):
+                        _rejeitar(p["id"])
+                        st.rerun()
+
+        # ------------------------------------------------------------ benchmark
+        st.markdown("#### Benchmark")
+        st.caption("Perguntas reais com o SQL que dá a resposta certa. É com elas que a nota do Genie é medida. "
+                   "No começo vêm dos SQLs do estudo (que o Genie já conhece); troque e acrescente perguntas "
+                   "reais do negócio para a nota valer de verdade.")
+        df = pd.DataFrame(a.benchmark or [], columns=["pergunta", "sql"])
+        editado = st.data_editor(df, num_rows="dynamic", use_container_width=True, key=f"bench_{a.id}",
+                                 column_config={"sql": st.column_config.TextColumn("SQL esperado", width="large")})
+        if st.button("💾 Salvar benchmark"):
+            a.benchmark = [
+                {"pergunta": str(r["pergunta"]).strip(), "sql": str(r["sql"] or "").strip()}
+                for r in editado.fillna("").to_dict("records") if str(r["pergunta"]).strip()
+            ]
+            salvar("Benchmark salvo. Atualize o Genie Space para ele usar as perguntas novas.")
+
+        # --------------------------------------------------------- aprendizados
+        with st.expander(f"📚 Aprendizados aprovados ({len(a.aprendizados)})"):
+            for j, x in enumerate(list(a.aprendizados)):
+                c1, c2 = st.columns([10, 1])
+                if x.get("tipo") == "instrucao":
+                    c1.markdown(f"**Instrução** · {x['instrucao']}")
+                else:
+                    c1.markdown(f"**Exemplo** · {x.get('pergunta')}")
+                    c1.code(x.get("sql") or "", language="sql")
+                if c2.button("🗑️", key=f"apr_{a.id}_{j}"):
+                    a.aprendizados.pop(j)
+                    salvar("Removido. Atualize o Genie Space.")
+                    st.rerun()
+
+        # ----------------------------------------------------------- agendamento
+        st.markdown("#### Melhoria automática")
+        st.caption("Um job roda o ciclo para todos os especialistas com Genie no horário escolhido e deixa as propostas "
+                   "aqui. Nada é aplicado ao Genie sem a sua aprovação.")
+        c1, c2 = st.columns([2, 1])
+        cron = c1.selectbox("Quando", ["0 0 6 ? * MON", "0 0 6 * * ?", "0 0 6 1 * ?"],
+                            format_func={"0 0 6 ? * MON": "Toda segunda às 6h", "0 0 6 * * ?": "Todo dia às 6h",
+                                         "0 0 6 1 * ?": "Todo dia 1º às 6h"}.get)
+        job = ss.extra.get("job_melhoria") or {}
+        if c2.button("📅 Atualizar agendamento" if job else "📅 Agendar"):
+            params = {"estado_path": caminho("assistente_estado.json"), "melhoria_path": caminho("melhoria.json"),
+                      "llm": ss.sel.llm_especialistas, "warehouse_id": ss.sel.warehouse_id}
+            try:
+                ss.extra["job_melhoria"] = servicos().agendar_melhoria(params, cron, job_id=job.get("job_id"))
+                salvar("Agendado")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Não consegui agendar: {mensagem_erro(e)}")
+        if ss.extra.get("job_melhoria"):
+            st.markdown(f"Job: [abrir]({ss.extra['job_melhoria']['url']})")

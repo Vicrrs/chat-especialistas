@@ -15,8 +15,10 @@ from .configurador.descoberta import Recursos, descobrir, listar_catalogos, list
 from .configurador.estudo import WarehouseFonteEstudo
 from .configurador.llm_sdk import ChatServing
 from .dados import executar_sql_warehouse
+from .seguranca import citar, ocultar_segredos
 
 NOTEBOOK_PUBLICACAO = "notebooks/04_publicar_job"
+NOTEBOOK_MELHORIA = "notebooks/05_melhorar_genies"
 
 
 def escopos_faltando(w) -> List[str]:
@@ -129,10 +131,10 @@ class Servicos:
                         status=resp.status_code,
                         tipo=resp.headers.get("content-type", ""),
                         redireciona_para=resp.headers.get("location", ""),
-                        resposta=resp.text[:200].replace("\n", " "),
+                        resposta=ocultar_segredos(resp.text[:200].replace("\n", " ")),
                     )
                 except Exception as e:  # noqa: BLE001
-                    linha.update(status="erro", resposta=str(e)[:200])
+                    linha.update(status="erro", resposta=ocultar_segredos(str(e))[:200])
                 resultado.append(linha)
         return resultado
 
@@ -160,8 +162,12 @@ class Servicos:
     def preparar_projeto(self, catalogo: str, schema: str, warehouse_id: str) -> List[str]:
         """Cria schema e volumes do projeto (config, documentos, llmops). Devolve erros, se houver."""
         erros = []
-        comandos = [f"CREATE SCHEMA IF NOT EXISTS `{catalogo}`.`{schema}`"] + [
-            f"CREATE VOLUME IF NOT EXISTS `{catalogo}`.`{schema}`.`{v}`" for v in ("config", "documentos", "llmops")
+        try:
+            projeto = citar(f"{catalogo}.{schema}", 2)  # vem do campo de texto da barra lateral
+        except ValueError as e:
+            return [str(e)]
+        comandos = [f"CREATE SCHEMA IF NOT EXISTS {projeto}"] + [
+            f"CREATE VOLUME IF NOT EXISTS {projeto}.`{v}`" for v in ("config", "documentos", "llmops")
         ]
         for sql in comandos:
             r = executar_sql_warehouse(self.w, warehouse_id, sql, 10, 120)
@@ -229,7 +235,7 @@ class Servicos:
                 run = cliente.jobs.get_run(run_id)
                 return {"run_id": run_id, "url": run.run_page_url, "como": quem}
             except Exception as e:  # noqa: BLE001
-                erros.append(f"{quem}: {e}")
+                erros.append(f"{quem}: {ocultar_segredos(str(e))}")
         raise RuntimeError("Não foi possível iniciar o job de publicação. " + " | ".join(erros))
 
     def status_publicacao(self, run_id: int, como: str = "usuario") -> Dict[str, Any]:
@@ -251,9 +257,46 @@ class Servicos:
                 if out.error:
                     saida["erro"] = out.error
             except Exception as e:  # noqa: BLE001
-                saida["erro"] = str(e)
+                saida["erro"] = ocultar_segredos(str(e))
         saida["sucesso"] = saida["terminado"] and resultado == "SUCCESS"
         return saida
+
+    # ----------------------------------------------------------------- Genie
+    def url_genie(self, space_id: str) -> str:
+        return f"{self.w_app.config.host.rstrip('/')}/genie/rooms/{space_id}"
+
+    def enviar_feedback_genie(self, space_id: str, conversa_id: str, mensagem_id: str, positivo: bool, comentario: str = "") -> None:
+        """Repassa o 👍/👎 do chat para a mensagem no Genie (aparece no monitoramento do espaço)."""
+        from databricks.sdk.service.dashboards import GenieFeedbackRating
+
+        nota = GenieFeedbackRating.POSITIVE if positivo else GenieFeedbackRating.NEGATIVE
+        self.w.genie.send_message_feedback(space_id, conversa_id, mensagem_id, nota, comment=comentario or None)
+
+    def agendar_melhoria(
+        self, parametros: Dict[str, str], cron: str, fuso: str = "America/Sao_Paulo", job_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Cria o job agendado que roda o notebook 05 (ciclo de melhoria dos Genies); com `job_id`, atualiza o existente."""
+        from databricks.sdk.service import jobs
+
+        repo = self.caminho_repo()
+        if not repo:
+            raise RuntimeError("Não descobri a pasta do repositório. Defina CAMINHO_REPO no app.yaml.")
+        tarefa = jobs.Task(
+            task_key="melhorar_genies",
+            notebook_task=jobs.NotebookTask(notebook_path=f"{repo}/{NOTEBOOK_MELHORIA}", base_parameters=parametros),
+        )
+        if os.environ.get("CLUSTER_ID_PUBLICACAO"):
+            tarefa.existing_cluster_id = os.environ["CLUSTER_ID_PUBLICACAO"]
+        config = dict(
+            name="chat_especialistas · melhoria dos Genies",
+            tasks=[tarefa],
+            schedule=jobs.CronSchedule(quartz_cron_expression=cron, timezone_id=fuso),
+        )
+        if job_id:
+            self.w.jobs.reset(job_id, new_settings=jobs.JobSettings(**config))
+        else:
+            job_id = self.w.jobs.create(**config).job_id
+        return {"job_id": job_id, "url": f"{self.w_app.config.host.rstrip('/')}/jobs/{job_id}"}
 
     # ------------------------------------------------------------------ chat
     def conversar(self, endpoint: str, mensagens: List[Dict[str, str]], conversation_id: str) -> Dict[str, Any]:

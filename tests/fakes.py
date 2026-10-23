@@ -141,10 +141,8 @@ class FakeWorkspace:
             ep("databricks-gte-large-en", "llm/v1/embeddings"),
             ep("modelo-churn", "", fm=False),
         ])
-        self.genie = NS(list_spaces=lambda page_size=None, page_token=None: NS(
-            spaces=[NS(space_id="g1", title="Cobrança", description="Inadimplência e acordos", warehouse_id="wh1")],
-            next_page_token=None,
-        ))
+        self.config = NS(host="https://ws", client_id=None)
+        self.genie = FakeGenie()
         self.warehouses = NS(list=lambda: [NS(id="wh1", name="Serverless Starter", state=NS(value="RUNNING"),
                                               enable_serverless_compute=True, cluster_size="Small")])
         self.catalogs = NS(list=lambda: [NS(name="main"), NS(name="system")])
@@ -152,3 +150,68 @@ class FakeWorkspace:
         self.tables = NS(list=lambda catalog_name, schema_name, **k: [
             NS(full_name=f"{catalog_name}.{schema_name}.{n}") for n in {"credito": ["propostas"], "cobranca": ["parcelas"]}.get(schema_name, [])
         ])
+
+
+class FakeGenie:
+    """Imita w.genie: espaços (criar/ler/atualizar), conversas com feedback e a avaliação nativa."""
+
+    def __init__(self):
+        self.espacos: Dict[str, Dict[str, Any]] = {}
+        self.conversas: Dict[str, Dict[str, list]] = {}  # space_id -> conversa_id -> mensagens
+        self.feedbacks: list = []
+        self.avaliacao = None  # [(pergunta, "GOOD"/"BAD", motivos, sql_esperado, sql_obtido)]; None = API indisponível
+
+    def list_spaces(self, page_size=None, page_token=None):
+        return NS(spaces=[NS(space_id="g1", title="Cobrança", description="Inadimplência e acordos", warehouse_id="wh1")],
+                  next_page_token=None)
+
+    def create_space(self, warehouse_id, serialized_space, *, title=None, description=None, parent_path=None):
+        sid = f"genie_{len(self.espacos) + 1}"
+        self.espacos[sid] = {"serialized_space": serialized_space, "title": title, "description": description,
+                             "warehouse_id": warehouse_id, "etag": "1"}
+        return NS(space_id=sid)
+
+    def get_space(self, space_id, include_serialized_space=None):
+        e = self.espacos[space_id]
+        return NS(space_id=space_id, title=e["title"], description=e["description"],
+                  serialized_space=e["serialized_space"], etag=e["etag"])
+
+    def update_space(self, space_id, **k):
+        e = self.espacos[space_id]
+        assert k.get("etag") == e["etag"], "etag desatualizado"
+        e.update({x: v for x, v in k.items() if v is not None and x != "etag"}, etag=str(int(e["etag"]) + 1))
+        return NS(space_id=space_id)
+
+    def send_message_feedback(self, space_id, conversation_id, message_id, rating, comment=None):
+        self.feedbacks.append((space_id, conversation_id, message_id, getattr(rating, "value", rating), comment))
+
+    def list_conversations(self, space_id, include_all=None, page_size=None, page_token=None):
+        return NS(conversations=[NS(conversation_id=c) for c in self.conversas.get(space_id, {})], next_page_token=None)
+
+    def list_conversation_messages(self, space_id, conversation_id, page_size=None, page_token=None):
+        return NS(messages=self.conversas[space_id][conversation_id], next_page_token=None)
+
+    def genie_create_eval_run(self, space_id, benchmark_question_ids=None):
+        if self.avaliacao is None:
+            raise Exception("Evaluation API is not enabled")
+        return NS(eval_run_id="r1", eval_run_status="RUNNING")
+
+    def genie_get_eval_run(self, space_id, eval_run_id):
+        ok = sum(1 for x in self.avaliacao if x[1] == "GOOD")
+        return NS(eval_run_id=eval_run_id, eval_run_status="DONE", num_correct=ok, num_questions=len(self.avaliacao))
+
+    def genie_list_eval_results(self, space_id, eval_run_id, page_size=None, page_token=None):
+        return NS(eval_results=[NS(result_id=str(i), question=x[0], benchmark_answer=x[3])
+                                for i, x in enumerate(self.avaliacao)], next_page_token=None)
+
+    def genie_get_eval_result_details(self, space_id, eval_run_id, result_id):
+        _, aval, motivos, esperado, obtido = self.avaliacao[int(result_id)]
+        return NS(assessment=aval, assessment_reasons=motivos,
+                  expected_response=[NS(response=esperado)], actual_response=[NS(response=obtido)])
+
+
+def mensagem_genie(conteudo, ts, rating=None, comentario=None, sql=None, erro=None):
+    return NS(content=conteudo, created_timestamp=ts, last_updated_timestamp=ts,
+              feedback=NS(rating=rating, comment=comentario) if rating else None,
+              error=NS(error=erro) if erro else None,
+              attachments=[NS(query=NS(query=sql))] if sql else [])

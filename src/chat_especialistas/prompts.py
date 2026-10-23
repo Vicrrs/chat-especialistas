@@ -101,6 +101,22 @@ Observações:
 {observacoes}
 """
 
+GENIE_TEMPLATE = """{prompt_especialista}
+
+A pergunta foi respondida pelo Genie Space do seu domínio. Com base APENAS no que o Genie
+devolveu (e nas regras de negócio, se houver), responda ao usuário em português do Brasil:
+traga os números principais, uma interpretação curta e as premissas. Não invente valores.
+Se o Genie não trouxe dados, diga isso com clareza.
+
+Pergunta: {pergunta}
+
+Resposta do Genie:
+{genie}
+
+Regras de negócio (documentação recuperada):
+{contexto}
+"""
+
 CONSOLIDADOR_TEMPLATE ="""{prompt_principal}
 
 Mais de um especialista respondeu à pergunta do usuário. Una as respostas em

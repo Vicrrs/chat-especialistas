@@ -30,15 +30,16 @@ se der erro e responde com os números, a interpretação e o SQL usado.
 
 ## Como começar: app Streamlit no Databricks
 
-A configuração é feita numa **app Streamlit** (Databricks Apps) com 5 abas:
+A configuração é feita numa **app Streamlit** (Databricks Apps) com 6 abas:
 
 | Aba | O que acontece |
 |---|---|
 | **1 · Modelos e Genies** | Lista **todas as IAs** do workspace (endpoints de chat e de embeddings), os **Genie Spaces** e os **SQL Warehouses** que você pode usar. Você escolhe a IA do Agente 01, a dos especialistas, os Genies liberados, o warehouse e o preço dos modelos (LLMOps). |
 | **2 · Agentes** | Para cada agente: nome, **prompt de negócio**, **tabelas** escolhidas navegando por catálogo → schema → tabela, Genie opcional e documentação opcional. Um botão cria um agente por Genie. |
-| **3 · Estudar tabelas** | O sistema **estuda** as tabelas de cada agente no SQL Warehouse (esquema, comentários, nulos, distintos, mínimo/máximo, valores mais comuns, amostra) e, com o seu prompt, escreve o conhecimento do agente. Cada SQL de exemplo é **executado**; só os que rodam entram. Você revisa e edita tudo. |
+| **3 · Estudar tabelas** | O sistema **estuda** as tabelas de cada agente no SQL Warehouse (esquema, comentários, nulos, distintos, mínimo/máximo, valores mais comuns, amostra) e, com o seu prompt, escreve o conhecimento do agente. Cada SQL de exemplo é **executado**; só os que rodam entram. Você revisa e edita tudo. Um botão transforma o agente num **Genie Space** (veja abaixo). |
 | **4 · Agente geral** | Gera o `agents.yaml` (no Volume do projeto) e dispara um **job** (`notebooks/04_publicar_job`) que indexa documentos, avalia o roteamento, registra no Unity Catalog e publica o endpoint + Review App. A aba mostra o progresso, a acurácia do roteamento e o endpoint. |
-| **5 · Conversar** | Testa o agente publicado: resposta, agentes acionados, SQL, tabela de resultado, tokens e US$. |
+| **5 · Conversar** | Testa o agente publicado: resposta, agentes acionados, SQL, tabela de resultado, tokens e US$. O 👍/👎 vai para o Genie e alimenta a aba 6. |
+| **6 · Melhorar Genies** | Benchmark com histórico da nota, propostas de melhoria para aprovar, mudanças nas tabelas e o agendamento do job de melhoria. |
 
 ### Criar a app a partir do Git folder
 
@@ -65,12 +66,62 @@ defina `CAMINHO_REPO`.
 Prefere notebook? `notebooks/00_COMECE_AQUI` tem o mesmo assistente com ipywidgets.
 Sem dados ainda? Rode `notebooks/exemplo_dados_ficticios` para criar tabelas fictícias de crédito e cobrança.
 
+## Especialistas como Genie Spaces
+
+Cada especialista pode virar um **Genie Space** criado e mantido pela app. Um Genie Space não chama
+outro, então o **Agente 01 continua sendo o nosso roteador**. Ele detecta a intenção e manda a pergunta,
+já reescrita com o contexto da conversa, ao Genie do especialista certo.
+
+```
+usuário ─► Agente 01 (roteador) ─► Genie "Crédito"   ─► resposta com números + SQL
+                               └─► Genie "Cobrança"  ─┘   (se o Genie falhar e o agente tiver tabelas,
+                                                          o agente de BI próprio assume)
+```
+
+1. **Aba 3 → 🧞 Criar Genie Space.** O espaço recebe as tabelas do agente, um bloco de instruções
+   (prompt de negócio, significado das tabelas e definições de métricas), os SQLs validados no estudo como
+   exemplos, as perguntas sugeridas e um **benchmark**. Ao atualizar, a app troca só o que é dela: exemplos e
+   textos curados direto no Genie, fora do bloco `=== chat-especialistas ===`, continuam lá. Genies
+   escolhidos à mão na aba 2 nunca são alterados.
+2. **Aba 4 → "Pelo Genie Space".** Fica marcado automaticamente quando você cria um Genie. No `agents.yaml`
+   isso vira `genie_modo: direto`; a outra opção (`ferramenta`) mantém o agente de BI próprio, que pode
+   consultar o Genie.
+
+### Melhoria contínua (aba 6)
+
+```
+👎 no Genie · 👎 no chat · erros · falhas no benchmark
+        │
+        ▼
+   casos ─► o LLM propõe uma instrução e/ou um SQL de exemplo ─► o SQL é EXECUTADO
+        │
+        ▼
+   você aprova (pode editar) ─► vira "aprendizado" do agente ─► 🚀 Atualizar Genie Space ─► benchmark de novo
+```
+
+- **Benchmark:** perguntas com o SQL esperado. A app usa a avaliação nativa do Genie (benchmarks do
+  espaço); se o workspace não tiver essa API, compara o resultado do Genie com o do SQL esperado. A nota
+  fica no histórico e aparece em gráfico. No começo o benchmark sai dos SQLs do estudo, que o Genie já
+  conhece. Para a nota medir alguma coisa, acrescente perguntas reais do negócio.
+- **Aprendizados** sobrevivem a um novo estudo das tabelas e também entram no `agents.yaml`, então o agente
+  de BI próprio melhora junto.
+- **Mudanças nas tabelas** (colunas novas, removidas ou com outro tipo) aparecem com um botão para estudar de novo.
+- **Agendamento:** a aba 6 cria um job (`notebooks/05_melhorar_genies`) que roda o ciclo toda semana, todo
+  dia ou todo mês. Ele **só gera propostas**; nada vai para o Genie sem aprovação.
+- Arquivos no Volume do projeto: `config/melhoria.json` guarda casos, propostas e histórico; os aprendizados
+  e o benchmark ficam em `config/assistente_estado.json`.
+
+Permissões: quem usa a app (ou a conta de serviço dela) precisa poder **criar Genie Spaces** e ter
+**CAN MANAGE** nos espaços criados (para ler as conversas e o feedback de todos os usuários). O job de
+melhoria roda com a identidade de quem o agendou.
+
 ## Estrutura
 
 ```
 app.py · app.yaml · requirements.txt  # ⭐ app Streamlit (Databricks Apps): configurador + chat de teste
 notebooks/00_COMECE_AQUI.py           # mesmo assistente em notebook (ipywidgets)
 notebooks/04_publicar_job.py          # job disparado pela app: indexa, avalia, registra e publica
+notebooks/05_melhorar_genies.py       # job agendado: feedback + benchmark + propostas para os Genies
 notebooks/01_ingestao_documentos.py   # reindexar documentos quando mudarem
 notebooks/02_registrar_e_publicar.py  # conversar com o agente, avaliar e republicar
 notebooks/03_llmops_painel.py         # tabela Delta de LLMOps, views, alerta de orçamento, job
@@ -83,15 +134,19 @@ src/chat_especialistas/
     configurador/gerador.py           # escolhas do assistente → agents.yaml
     configurador/interface.py         # versão notebook (ipywidgets)
     configurador/llm_sdk.py           # LLM via SDK com a identidade de quem usa a app
+    configurador/genie_espaco.py      # agente -> Genie Space (criar/atualizar sem apagar a curadoria)
+    configurador/melhoria.py          # casos, benchmark, propostas validadas, aprendizados, mudanças
     app_servicos.py                   # tudo o que a app faz no Databricks (descoberta, Volume, job, chat)
     graph.py                          # grafo LangGraph: Agente 01 → detector de intenção → especialistas
     bi_agent.py                       # especialista como agente de BI (pensar → ferramenta → observar)
     dados.py                          # Unity Catalog, SQL Warehouse e Genie em produção
     sql_guard.py                      # SQL somente leitura e só nas tabelas do agente
+    seguranca.py                      # oculta credenciais em erros; valida nomes usados em SQL
     retriever.py / ingestao.py        # documentação no Vector Search
     llmops.py                         # tokens, custo em US$ e registro de cada interação
     publicacao.py                     # avaliação do roteamento, registro no MLflow/UC e deploy
 agent.py                              # wrapper MLflow ResponsesAgent (o que vai para o Model Serving)
+scripts/seguranca.sh                  # testes de segurança + bandit + pip-audit
 docs_exemplo/                         # documentos fictícios para testar a documentação
 tests/                                # testes locais sem Databricks (LLM simulado, SQL real em SQLite)
 ```
@@ -138,6 +193,42 @@ genie_space_id: "01ef..."                                    # opcional
 - **Limites:** `bi.max_iteracoes` (passos do agente), `bi.max_linhas` (LIMIT), `bi.linhas_para_o_llm`
   (quanto do resultado o agente lê) e `bi.timeout_segundos`.
 - O modelo de LLM precisa suportar **tool calling** (o Llama 3.3 70B do Databricks suporta).
+
+## Segurança (bancos e financeiras)
+
+`scripts/seguranca.sh` roda tudo de uma vez: os testes de segurança, a análise estática (bandit) e a busca
+de vulnerabilidades conhecidas nas dependências (pip-audit). Rode antes de cada deploy e no CI:
+
+```bash
+pip install -r requirements-dev.txt -r requirements-agente.txt
+scripts/seguranca.sh
+```
+
+No GitHub, o workflow `.github/workflows/ci.yml` roda a cada push na `main`, em todo PR e toda segunda-feira
+(para pegar vulnerabilidades novas nas dependências mesmo sem commits). Ele tem dois jobs: os testes em
+Python 3.11 e 3.12 e o `scripts/seguranca.sh`. O Dependabot (`.github/dependabot.yml`) abre PRs semanais de
+atualização das dependências e das actions, e cada um passa pelo CI. Para exigir o CI verde antes do merge,
+ative em *Settings → Branches → Branch protection* os checks "Testes" e "Segurança".
+
+| Teste | O que garante |
+|---|---|
+| `tests/test_seguranca_sql.py` | O agente só **lê**, só as tabelas do **seu** domínio e com `LIMIT`. Bloqueia escrita e DDL, várias instruções, outras tabelas (inclusive via `UNION`, subconsulta, CTE disfarçada, `system.*`, caminhos de arquivo), funções que tiram dados do banco (`http_request`, `secret`, `ai_*`, `reflect`, `read_files`, `remote_query`, UDFs de outros schemas), *time travel* (dados já apagados) e `LIMIT` disfarçado. Também cobre *prompt injection* de ponta a ponta (o LLM pede `DROP` ou `http_request` e nada chega ao banco), o isolamento entre especialistas, as propostas de melhoria e os nomes vindos da configuração. |
+| `tests/test_seguranca_privacidade.py` | Com `llmops.registrar_textos: false`, nenhum texto do usuário (ex.: CPF) vai para logs, JSONL, traces ou `custom_outputs`. Testa a trilha de auditoria (usuário, conversa, especialistas, consultas) e que tokens, senhas e chaves não aparecem nas mensagens de erro. |
+| `tests/test_seguranca_repositorio.py` | Nenhuma credencial versionada, arquivos de segredo no `.gitignore`, `app.yaml` sem tokens e limites (`max_linhas`, `timeout`, `max_iteracoes`) dentro do razoável. |
+
+O que o código **não** substitui (configure no workspace):
+
+- **Unity Catalog é a barreira principal.** Dê ao endpoint (ou a cada usuário, com `bi.autenticacao: usuario`)
+  só `SELECT` nas tabelas de cada domínio. Use *row filters* e *column masks* para CPF/CNPJ, renda e saldo.
+  Com *on-behalf-of-user* elas valem para o chat, para o Genie e para o estudo.
+- **Inference table / AI Gateway:** grava o request e a resposta inteiros (a resposta traz números e linhas
+  do cliente). Desligue o *payload logging* ou restrinja a tabela com GRANTs e masks.
+- **Rede e identidade:** Private Link, IP access lists, SSO/SCIM e tokens de curta duração (OAuth). Credenciais
+  sempre em *Databricks secrets* (no `app.yaml`, use `valueFrom`).
+- **Modelos:** use endpoints servidos dentro do Databricks (Foundation Model APIs ou modelos próprios) para os
+  dados não saírem para terceiros. Se usar *external models*, avalie o contrato e a residência dos dados.
+- **Auditoria:** `system.access.audit` (quem consultou o quê), as tabelas de LLMOps e o histórico de
+  propostas aprovadas (`melhoria.json`) mostram quem mudou o conhecimento dos Genies.
 
 ## Onde o MLflow é usado
 
