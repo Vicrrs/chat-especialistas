@@ -6,4 +6,4 @@ langchain-core>=0.3
 pydantic>=2.6
 pyyaml>=6.0
 sqlglot>=25.0
-pandas>=2.0
+pandas>=3.0.6
