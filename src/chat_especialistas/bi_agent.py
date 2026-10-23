@@ -123,30 +123,38 @@ def _ferramentas(
 
         def perguntar_genie(pergunta: str) -> str:
             """Faz a pergunta, em linguagem natural, ao Genie Space deste domínio e devolve o SQL gerado e o resultado."""
-            r = fonte.perguntar_genie(esp, pergunta)
-            sessao.consultas.append(
-                {"via": "genie", "objetivo": pergunta, "sql": r.get("sql"), "linhas": len(r.get("linhas", [])),
-                 "duracao_ms": r.get("duracao_ms", 0), "erro": r.get("erro")}
-            )
-            if r.get("colunas"):
-                sessao.ultimo_resultado = {
-                    "sql": r.get("sql"), "colunas": r["colunas"], "linhas": r["linhas"],
-                    "total_linhas": len(r["linhas"]), "truncado": False,
-                }
-            partes = []
-            if r.get("erro"):
-                partes.append(f"ERRO do Genie: {r['erro']}")
-            if r.get("texto"):
-                partes.append(f"Resposta do Genie: {r['texto']}")
-            if r.get("sql"):
-                partes.append(f"SQL do Genie:\n{r['sql']}")
-            if r.get("colunas"):
-                partes.append(_tabela_texto(r["colunas"], r["linhas"], bi.linhas_para_o_llm))
-            return "\n\n".join(partes) or "Genie não retornou resultado."
+            return _consultar_genie(cfg, esp, fonte, pergunta, sessao)[1]
 
         ferramentas.append(StructuredTool.from_function(perguntar_genie))
 
     return ferramentas
+
+
+def _consultar_genie(
+    cfg: AppConfig, esp: EspecialistaConfig, fonte: FonteDados, pergunta: str, sessao: _Sessao
+) -> tuple[Dict[str, Any], str]:
+    """Pergunta ao Genie, registra a consulta na sessão e devolve (resultado, texto para o LLM)."""
+    r = fonte.perguntar_genie(esp, pergunta)
+    sessao.consultas.append(
+        {"via": "genie", "objetivo": pergunta, "sql": r.get("sql"), "linhas": len(r.get("linhas", [])),
+         "duracao_ms": r.get("duracao_ms", 0), "erro": r.get("erro"), "genie_space_id": esp.genie_space_id,
+         "genie_conversa_id": r.get("conversa_id"), "genie_mensagem_id": r.get("mensagem_id")}
+    )
+    if r.get("colunas"):
+        sessao.ultimo_resultado = {
+            "sql": r.get("sql"), "colunas": r["colunas"], "linhas": r["linhas"],
+            "total_linhas": len(r["linhas"]), "truncado": False,
+        }
+    partes = []
+    if r.get("erro"):
+        partes.append(f"ERRO do Genie: {r['erro']}")
+    if r.get("texto"):
+        partes.append(f"Resposta do Genie: {r['texto']}")
+    if r.get("sql"):
+        partes.append(f"SQL do Genie:\n{r['sql']}")
+    if r.get("colunas"):
+        partes.append(_tabela_texto(r["colunas"], r["linhas"], cfg.bi.linhas_para_o_llm))
+    return r, "\n\n".join(partes) or "Genie não retornou resultado."
 
 
 def _prompt_bi(cfg: AppConfig, esp: EspecialistaConfig, trechos: List[Trecho]) -> str:
@@ -207,6 +215,23 @@ def executar_especialista(
         sistema = prompts.prompt_especialista(esp, formatar_contexto(trechos))
         resposta = llm_simples.invoke([SystemMessage(sistema), *historico])
         return _resultado(esp, _texto(resposta), sessao, iteracoes=1)
+
+    # ---- Genie direto: o Genie Space do domínio responde; o LLM só redige a resposta.
+    if esp.genie_space_id and esp.genie_modo == "direto" and fonte is not None:
+        try:
+            r, texto_genie = _consultar_genie(cfg, esp, fonte, pergunta, sessao)
+        except Exception as exc:  # noqa: BLE001 - Genie fora do ar: cai para o agente de BI, se houver tabelas
+            log.exception("Falha no Genie %s", esp.genie_space_id)
+            r, texto_genie = {"erro": f"{type(exc).__name__}: {exc}"}, ""
+        if not r.get("erro") or not esp.dados:
+            sistema = prompts.GENIE_TEMPLATE.format(
+                prompt_especialista=esp.prompt.strip(),
+                pergunta=pergunta,
+                genie=texto_genie or f"ERRO do Genie: {r.get('erro')}",
+                contexto=formatar_contexto(trechos) if esp.documentos else "(este agente não usa documentação)",
+            )
+            resposta = llm_simples.invoke([SystemMessage(sistema), *historico])
+            return _resultado(esp, _texto(resposta), sessao, iteracoes=1)
 
     # ---- Agente de BI
     ferramentas = _ferramentas(cfg, esp, retriever, fonte, sessao)
