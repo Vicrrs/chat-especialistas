@@ -134,7 +134,9 @@ def mensagem_erro(e: Exception) -> str:
     """Resume erros do SDK; para falta de escopo, diz exatamente o que liberar na app."""
     import re
 
-    texto = str(e)
+    from ..seguranca import ocultar_segredos
+
+    texto = ocultar_segredos(str(e))
     m = re.search(r"does not have required scopes?:\s*([\w.:\-, ]+?)\s*(\[|$)", texto)
     if m:
         escopos = m.group(1).strip()
