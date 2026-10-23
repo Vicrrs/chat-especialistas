@@ -198,3 +198,69 @@ def test_token_sem_escopo_passa_tudo_para_conta_de_servico(monkeypatch):
     sv = Servicos.do_contexto({"x-forwarded-access-token": "tok", "x-forwarded-email": "a@b"}, w_app=w_app)
     assert sv.identidade == "app" and sv.w is w_app
     assert "`model-serving`" in sv.motivo and sv.id_conta_servico == "3507dcde"
+
+
+def test_app_genie_por_especialista_e_melhoria():
+    from chat_especialistas.configurador.gerador import AgenteRascunho, Selecao, estado_para_json
+    from chat_especialistas.configurador.melhoria import EstadoMelhoria
+    from fakes import mensagem_genie
+
+    estudo = json.loads(estudo_json())
+    estudo["exemplos_sql"] = [{"pergunta": "Total", "sql": f"SELECT count(*) AS n FROM {T}"}]
+    a = AgenteRascunho(nome="Especialista em Crédito", prompt_negocio="Propostas.", tabelas=[T], estudo=estudo)
+    sel = Selecao(llm_roteador="databricks-meta-llama-3-3-70b-instruct",
+                  llm_especialistas="databricks-meta-llama-3-3-70b-instruct", warehouse_id="wh1")
+    proposta = json.dumps({"diagnostico": "Faltou filtrar PJ.", "instrucao": "PJ = segmento 'PJ'.",
+                           "sql": f"SELECT count(*) AS n FROM {T} WHERE segmento = 'PJ'"})
+    sv = FakeServicos([proposta, proposta])
+    base = "/Volumes/main/chat_especialistas/config"
+    sv.arquivos[f"{base}/assistente_estado.json"] = estado_para_json(sel, [a])
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.session_state["servicos"] = sv
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Crie na aba **3" in i.value for i in at.info)
+
+    # ---- aba 3: o especialista vira Genie Space
+    botao(at, "🧞 Criar Genie Space").click().run()
+    assert not at.exception, at.exception
+    ag = at.session_state["agentes"][0]
+    assert ag.genie_space_id == "genie_1" and ag.genie_gerado and ag.benchmark  # benchmark semeado pelo estudo
+    assert "genie_1" in at.session_state["sel"].genies
+    assert any("Criado o Genie Space" in s.value for s in at.success)
+    assert at.selectbox(key="ed_genie").value == "genie_1"  # a aba 2 enxerga o Genie novo
+
+    # ---- aba 4: o Agente 01 manda as perguntas ao Genie
+    botao(at, "Gerar agente geral").click().run()
+    cfg = AppConfig.model_validate(yaml.safe_load(sv.arquivos[f"{base}/agents.yaml"]))
+    assert cfg.especialista("credito").genie_modo == "direto"
+
+    # ---- aba 6: ciclo de melhoria (👎 no Genie + benchmark) -> propostas -> aprovar -> atualizar o Genie
+    sv.w.genie.conversas["genie_1"] = {"c1": [mensagem_genie("Quantas propostas PJ?", 10, rating="NEGATIVE")]}
+    botao(at, "Rodar ciclo de melhoria").click().run()
+    assert not at.exception, at.exception
+    est = EstadoMelhoria.from_json(sv.arquivos[f"{base}/melhoria.json"])
+    assert len(est.pendentes("credito")) == 2  # 1 do feedback + 1 do benchmark que falhou
+    botao(at, "✅ Aprovar").click().run()
+    assert not at.exception, at.exception
+    ag = at.session_state["agentes"][0]
+    assert [x["tipo"] for x in ag.aprendizados] == ["instrucao", "exemplo_sql"]
+    assert len(EstadoMelhoria.from_json(sv.arquivos[f"{base}/melhoria.json"]).pendentes()) == 1
+    botao(at, "Atualizar Genie Space com os aprendizados").click().run()
+    assert not at.exception, at.exception
+    assert "PJ = segmento 'PJ'." in sv.w.genie.espacos["genie_1"]["serialized_space"]
+
+    # ---- aba 5: 👎 no chat vai para a mensagem do Genie e vira caso
+    sv.conversar = lambda *a, **k: {
+        "output": [{"content": [{"text": "São 5."}]}],
+        "custom_outputs": {"especialistas": ["credito"], "consultas_sql": [
+            {"especialista": "credito", "via": "genie", "objetivo": "Total de propostas PJ em 2026", "sql": "SELECT 5",
+             "genie_space_id": "genie_1", "genie_conversa_id": "c9", "genie_mensagem_id": "m9"}]}}
+    next(t for t in at.text_input if t.label == "Endpoint do agente").set_value("agents_main-chat").run()
+    at.chat_input[0].set_value("e de PJ?").run()
+    at.text_input(key="comentario_1").set_value("faltou 2025")
+    at.button(key="ruim_1").click().run()
+    assert not at.exception, at.exception
+    assert sv.w.genie.feedbacks == [("genie_1", "c9", "m9", "NEGATIVE", "faltou 2025")]
+    casos = EstadoMelhoria.from_json(sv.arquivos[f"{base}/melhoria.json"]).casos
+    assert casos[-1]["pergunta"] == "Total de propostas PJ em 2026" and "faltou 2025" in casos[-1]["detalhe"]
