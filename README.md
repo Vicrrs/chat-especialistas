@@ -204,6 +204,12 @@ pip install -r requirements-dev.txt -r requirements-agente.txt
 scripts/seguranca.sh
 ```
 
+No GitHub, o workflow `.github/workflows/ci.yml` roda a cada push na `main`, em todo PR e toda segunda-feira
+(para pegar vulnerabilidades novas nas dependências mesmo sem commits). Ele tem dois jobs: os testes em
+Python 3.11 e 3.12 e o `scripts/seguranca.sh`. O Dependabot (`.github/dependabot.yml`) abre PRs semanais de
+atualização das dependências e das actions, e cada um passa pelo CI. Para exigir o CI verde antes do merge,
+ative em *Settings → Branches → Branch protection* os checks "Testes" e "Segurança".
+
 | Teste | O que garante |
 |---|---|
 | `tests/test_seguranca_sql.py` | O agente só **lê**, só as tabelas do **seu** domínio e com `LIMIT`. Bloqueia escrita e DDL, várias instruções, outras tabelas (inclusive via `UNION`, subconsulta, CTE disfarçada, `system.*`, caminhos de arquivo), funções que tiram dados do banco (`http_request`, `secret`, `ai_*`, `reflect`, `read_files`, `remote_query`, UDFs de outros schemas), *time travel* (dados já apagados) e `LIMIT` disfarçado. Também cobre *prompt injection* de ponta a ponta (o LLM pede `DROP` ou `http_request` e nada chega ao banco), o isolamento entre especialistas, as propostas de melhoria e os nomes vindos da configuração. |
