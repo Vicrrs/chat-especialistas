@@ -85,7 +85,7 @@ def gerar_chunks(docs: List[Dict[str, str]], chunk_size: int = 1000, chunk_overl
         for i, trecho in enumerate(splitter.split_text(doc["texto"])):
             chave = f"{doc['especialista']}|{doc['fonte']}|{i}"
             linhas.append({
-                "chunk_id": hashlib.md5(chave.encode()).hexdigest(),
+                "chunk_id": hashlib.md5(chave.encode(), usedforsecurity=False).hexdigest(),  # só identificador
                 "especialista": doc["especialista"],
                 "fonte": doc["fonte"],
                 "conteudo": trecho,
