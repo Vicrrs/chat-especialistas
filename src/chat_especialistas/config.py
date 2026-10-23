@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+from .seguranca import nome_seguro
 
 
 class LLMConfig(BaseModel):
@@ -99,6 +101,7 @@ class DadosConfig(BaseModel):
         for t in v:
             if t.count(".") != 2:
                 raise ValueError(f"tabela '{t}' deve ser catalogo.schema.tabela")
+            nome_seguro(t, 3)
         return [t.lower() for t in v]
 
 
@@ -112,6 +115,9 @@ class EspecialistaConfig(BaseModel):
     k: Optional[int] = None
     dados: Optional[DadosConfig] = None
     genie_space_id: Optional[str] = None
+    # ferramenta = o agente de BI pode delegar ao Genie; direto = a pergunta vai direto ao Genie
+    # (o agente de BI próprio só entra se o Genie falhar e houver tabelas).
+    genie_modo: Literal["ferramenta", "direto"] = "ferramenta"
     max_iteracoes: Optional[int] = None
     # Usa documentação indexada no Vector Search? (false = só dados/Genie)
     documentos: bool = True
@@ -171,6 +177,11 @@ class AppConfig(BaseModel):
         self.projeto.catalogo = self.projeto.catalogo or cat
         self.projeto.schema_ = self.projeto.schema_ or sch
         self.projeto.nome_modelo = self.projeto.nome_modelo or f"{self.projeto.catalogo}.{self.projeto.schema_}.chat_especialistas"
+        # Os notebooks montam SQL com estes nomes: só identificadores simples.
+        nome_seguro(f"{self.projeto.catalogo}.{self.projeto.schema_}", 2)
+        nome_seguro(self.projeto.nome_modelo, 3)
+        nome_seguro(self.vector_search.tabela_origem, 3)
+        nome_seguro(self.vector_search.indice_padrao, 3)
         return self
 
     @property
