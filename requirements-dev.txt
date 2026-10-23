@@ -1,4 +1,4 @@
 # Ferramentas de desenvolvimento e verificação de segurança (não vão para a app nem para o endpoint).
 pytest>=8.0
 bandit>=1.8
-pip-audit>=2.7
+pip-audit>=2.10.1
