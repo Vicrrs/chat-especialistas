@@ -70,27 +70,34 @@ class DatabricksFonteDados:
 
     # ------------------------------------------------------------- Genie
     def perguntar_genie(self, esp: EspecialistaConfig, pergunta: str) -> Dict[str, Any]:
-        w = self._cliente()
-        inicio = time.perf_counter()
-        msg = w.genie.start_conversation_and_wait(esp.genie_space_id, pergunta)
-        saida: Dict[str, Any] = {"texto": None, "sql": None, "colunas": [], "linhas": []}
-        for anexo in msg.attachments or []:
-            if anexo.text and anexo.text.content:
-                saida["texto"] = anexo.text.content
-            if anexo.query:
-                saida["sql"] = anexo.query.query
-                saida["descricao"] = anexo.query.description
-                res = w.genie.get_message_attachment_query_result(
-                    esp.genie_space_id, msg.conversation_id, msg.message_id or msg.id, anexo.attachment_id
-                )
-                st = res.statement_response
-                if st and st.manifest:
-                    saida["colunas"] = [c.name for c in st.manifest.schema.columns]
-                    saida["linhas"] = (st.result.data_array or [])[: self.cfg.bi.linhas_para_o_llm] if st.result else []
-        if msg.error:
-            saida["erro"] = str(msg.error)
-        saida["duracao_ms"] = int((time.perf_counter() - inicio) * 1000)
-        return saida
+        return perguntar_genie_space(self._cliente(), esp.genie_space_id, pergunta, self.cfg.bi.linhas_para_o_llm)
+
+
+def perguntar_genie_space(w, space_id: str, pergunta: str, max_linhas: int = 50) -> Dict[str, Any]:
+    """Abre uma conversa no Genie Space e devolve texto, SQL, colunas e linhas da resposta."""
+    inicio = time.perf_counter()
+    msg = w.genie.start_conversation_and_wait(space_id, pergunta)
+    mensagem_id = msg.message_id or msg.id
+    saida: Dict[str, Any] = {
+        "texto": None, "sql": None, "colunas": [], "linhas": [],
+        # Identificam a mensagem no Genie (feedback e melhoria do espaço depois).
+        "conversa_id": msg.conversation_id, "mensagem_id": mensagem_id,
+    }
+    for anexo in msg.attachments or []:
+        if anexo.text and anexo.text.content:
+            saida["texto"] = anexo.text.content
+        if anexo.query:
+            saida["sql"] = anexo.query.query
+            saida["descricao"] = anexo.query.description
+            res = w.genie.get_message_attachment_query_result(space_id, msg.conversation_id, mensagem_id, anexo.attachment_id)
+            st = res.statement_response
+            if st and st.manifest:
+                saida["colunas"] = [c.name for c in st.manifest.schema.columns]
+                saida["linhas"] = (st.result.data_array or [])[:max_linhas] if st.result else []
+    if msg.error:
+        saida["erro"] = str(msg.error)
+    saida["duracao_ms"] = int((time.perf_counter() - inicio) * 1000)
+    return saida
 
 
 def executar_sql_warehouse(w, warehouse_id: str, sql: str, max_linhas: int = 1000, timeout_segundos: int = 120) -> ResultadoSQL:
