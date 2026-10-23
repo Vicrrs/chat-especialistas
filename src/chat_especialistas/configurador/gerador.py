@@ -29,6 +29,8 @@ class Selecao:
     schema: str = "chat_especialistas"
     vector_search_endpoint: str = "vs_chat_especialistas"
     autenticacao: str = "servico"
+    # bi = cada especialista é o nosso agente de BI; genie = quem tem Genie Space responde por ele
+    modo_especialistas: str = "bi"
     nome_assistente: str = "Assistente"
     prompt_geral: str = ""
     precos: Dict[str, Dict[str, float]] = field(default_factory=dict)
@@ -43,6 +45,11 @@ class AgenteRascunho:
     documentos: bool = False
     id: str = ""
     estudo: Optional[Dict[str, Any]] = None  # EstudoAgente.to_dict()
+    genie_gerado: bool = False  # o Genie Space foi criado pela app e é mantido por ela
+    # Melhorias aprovadas com o tempo; sobrevivem a um novo estudo das tabelas.
+    # {"tipo": "instrucao", "instrucao": ...} ou {"tipo": "exemplo_sql", "pergunta": ..., "sql": ...}
+    aprendizados: List[Dict[str, Any]] = field(default_factory=list)
+    benchmark: List[Dict[str, str]] = field(default_factory=list)  # [{"pergunta", "sql"}] para avaliar o Genie
 
     def __post_init__(self):
         self.id = self.id or slug(self.nome)
@@ -68,6 +75,21 @@ PROMPT_AGENTE = """{prompt_negocio}
 
 Você é o {nome}. Responda perguntas sobre esse domínio consultando os dados e as regras
 de negócio. Seja preciso com números e transparente sobre premissas."""
+
+
+def conhecimento(a: AgenteRascunho) -> EstudoAgente:
+    """O que o agente sabe: o estudo das tabelas + os aprendizados aprovados depois."""
+    e = EstudoAgente.from_dict(a.estudo) if a.estudo else EstudoAgente(nome=a.nome)
+    instrucoes = [x["instrucao"].strip() for x in a.aprendizados if x.get("tipo") == "instrucao" and x.get("instrucao")]
+    if instrucoes:
+        extra = "\n".join(f"- {i}" for i in instrucoes)
+        e.instrucoes = f"{e.instrucoes}\n\nAprendizados (aprovados):\n{extra}".strip()
+    exemplos = {x["pergunta"].strip().lower(): x for x in e.exemplos_sql}
+    for x in a.aprendizados:
+        if x.get("tipo") == "exemplo_sql" and x.get("pergunta") and x.get("sql"):
+            exemplos[x["pergunta"].strip().lower()] = {"pergunta": x["pergunta"].strip(), "sql": x["sql"].strip()}
+    e.exemplos_sql = list(exemplos.values())
+    return e
 
 
 def _ids_unicos(agentes: List[AgenteRascunho]) -> None:
@@ -102,7 +124,7 @@ def gerar_config(sel: Selecao, agentes: List[AgenteRascunho], base: Optional[Dic
 
     especialistas = []
     for a in agentes:
-        e = EstudoAgente.from_dict(a.estudo) if a.estudo else EstudoAgente()
+        e = conhecimento(a)
         nome = a.nome.strip() or e.nome or a.id
         item: Dict[str, Any] = {
             "id": a.id,
@@ -122,6 +144,7 @@ def gerar_config(sel: Selecao, agentes: List[AgenteRascunho], base: Optional[Dic
             }
         if a.genie_space_id:
             item["genie_space_id"] = a.genie_space_id
+            item["genie_modo"] = "direto" if sel.modo_especialistas == "genie" else "ferramenta"
         especialistas.append(item)
 
     dados = {
