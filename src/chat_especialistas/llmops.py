@@ -181,7 +181,7 @@ def montar_registro(
         {
             "especialista": r.get("especialista"),
             "via": c.get("via"),
-            "objetivo": c.get("objetivo"),
+            "objetivo": c.get("objetivo") if ops.registrar_textos else None,  # é a pergunta reescrita
             "sql": c.get("sql") if ops.registrar_textos else None,
             "linhas": c.get("linhas"),
             "duracao_ms": c.get("duracao_ms"),
